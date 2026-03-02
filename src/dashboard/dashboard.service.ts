@@ -5,7 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 export class DashboardService {
     constructor(private prisma: PrismaService) { }
 
-    async getDashboardData(userId: string) {
+    async getDashboardData(userId: string, startDate?: string, endDate?: string) {
         const user = await this.prisma.user.findUnique({
             where: { id: userId },
             include: {
@@ -18,111 +18,235 @@ export class DashboardService {
 
         switch (user.role.code) {
             case 'DIRECTOR':
-            case 'ACCOUNTANT':
             case 'CHIEF_ACCOUNTANT':
-                return this.getDirectorStats();
+                return this.getAccountingStats(undefined, startDate, endDate);
+            case 'ACCOUNTANT':
+                return this.getAccountingStats(user.employee?.branchId, startDate, endDate);
             case 'MANAGER':
-                return this.getManagerStats(user.employee?.branchId);
+                return this.getManagerStats(user.employee?.branchId, startDate, endDate);
             case 'SALE':
-                return this.getSaleStats(user.employee?.id);
+                return this.getSaleStats(user.employee?.id, startDate, endDate);
             case 'TELESALE':
-                return this.getTelesaleStats(user.employee?.id, userId);
+                return this.getTelesaleStats(user.employee?.id, userId, startDate, endDate);
             case 'MARKETING':
-                return this.getMarketingStats(user.employee?.id);
+                return this.getMarketingStats(user.employee?.id, startDate, endDate);
             default:
                 return { message: 'Role not supported for dashboard yet' };
         }
     }
 
-    private async getDirectorStats() {
-        const [revResult, ordersCount, employeesCount] = await Promise.all([
+    private async getAccountingStats(branchId?: string, startStr?: string, endStr?: string) {
+        const now = new Date();
+        const startDate = startStr ? new Date(startStr) : new Date(now.getFullYear(), now.getMonth(), 1);
+        const endDate = endStr ? new Date(endStr) : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+        // Ensure endDate covers the whole day if only date is provided
+        if (endStr && !endStr.includes('T')) {
+            endDate.setHours(23, 59, 59, 999);
+        }
+
+        // Base filter for orders
+        const orderWhere: any = {
+            OR: [
+                {
+                    payments: { none: { paymentMethod: 'INSTALLMENT' } },
+                    orderDate: { gte: startDate, lte: endDate }
+                },
+                {
+                    payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                    isPaymentConfirmed: true,
+                    confirmedAt: { gte: startDate, lte: endDate }
+                }
+            ]
+        };
+        if (branchId) orderWhere.branchId = branchId;
+
+        const [revResult, ordersCount, unconfirmedRevResult, unconfirmedCount, unissuedInvoiceCount, employeesCount] = await Promise.all([
             this.prisma.order.aggregate({
+                where: orderWhere,
                 _sum: { totalAmount: true }
             }),
-            this.prisma.order.count(),
+            this.prisma.order.count({ where: orderWhere }),
+            this.prisma.order.aggregate({
+                where: {
+                    ...(branchId ? { branchId } : {}),
+                    payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                    isPaymentConfirmed: false,
+                    orderDate: { gte: startDate, lte: endDate }
+                },
+                _sum: { totalAmount: true }
+            }),
+            this.prisma.order.count({
+                where: {
+                    ...(branchId ? { branchId } : {}),
+                    payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                    isPaymentConfirmed: false,
+                    orderDate: { gte: startDate, lte: endDate }
+                }
+            }),
+            this.prisma.order.count({
+                where: { ...orderWhere, isInvoiceIssued: false }
+            }),
             this.prisma.employee.count({
-                where: { status: 'Đang làm việc' }
+                where: {
+                    status: 'Đang làm việc',
+                    ...(branchId ? { branchId } : {})
+                }
             })
         ]);
 
         const totalRevenue = Number(revResult._sum.totalAmount || 0);
+        const unconfirmedRevenue = Number(unconfirmedRevResult._sum.totalAmount || 0);
 
-        // Top Branches
-        const topBranches = await this.prisma.branch.findMany({
+        // Get eligible order IDs to avoid circular reference in Prisma
+        // (filtering payment -> order -> payments creates a circular relation)
+        const eligibleOrders = await this.prisma.order.findMany({
+            where: orderWhere,
+            select: { id: true }
+        });
+        const eligibleOrderIds = eligibleOrders.map(o => o.id);
+
+        // Detailed Payment Method Breakdown (using orderIds to avoid circular reference)
+        const methods = ['CASH', 'TRANSFER_COMPANY', 'TRANSFER_PERSONAL', 'CARD', 'INSTALLMENT'];
+        const paymentMethodBreakdown = await Promise.all(methods.map(async method => {
+            const sum = await this.prisma.payment.aggregate({
+                where: {
+                    paymentMethod: method,
+                    orderId: { in: eligibleOrderIds }
+                },
+                _sum: { amount: true }
+            });
+            return {
+                method,
+                amount: Number(sum._sum.amount || 0)
+            };
+        }));
+
+        // Top Branches / All Branches Table
+        const branchWhere: any = {
+            OR: [
+                {
+                    payments: { none: { paymentMethod: 'INSTALLMENT' } },
+                    orderDate: { gte: startDate, lte: endDate }
+                },
+                {
+                    payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                    isPaymentConfirmed: true,
+                    confirmedAt: { gte: startDate, lte: endDate }
+                },
+                {
+                    payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                    isPaymentConfirmed: false,
+                    orderDate: { gte: startDate, lte: endDate }
+                }
+            ]
+        };
+
+        const branches = await this.prisma.branch.findMany({
+            ...(branchId ? { where: { id: branchId } } : {}),
             include: {
                 orders: {
-                    select: { totalAmount: true }
+                    where: branchWhere,
+                    select: {
+                        totalAmount: true,
+                        isPaymentConfirmed: true,
+                        isInvoiceIssued: true,
+                        payments: {
+                            select: { paymentMethod: true }
+                        },
+                        items: {
+                            select: { isBelowMin: true }
+                        }
+                    }
                 }
             }
         });
 
-        // Calculate branch revenue and alerts manually
-        const kpiAlerts: any[] = [];
-        const branchStats = await Promise.all(topBranches.map(async b => {
-            const revenue = b.orders.reduce((sum, o) => sum + Number(o.totalAmount), 0);
+        const branchStats = branches.map(b => {
+            const revenueOrders = b.orders.filter(o =>
+                (o.payments.every(p => p.paymentMethod !== 'INSTALLMENT')) ||
+                (o.payments.some(p => p.paymentMethod === 'INSTALLMENT') && o.isPaymentConfirmed)
+            );
+            const revenue = revenueOrders.reduce((sum, o) => sum + Number(o.totalAmount), 0);
+            const lowPriceOrders = revenueOrders.filter(o => o.items.some(i => i.isBelowMin)).length;
 
-            // Calculate low price stats for this branch
-            const ordersWithLowPrice = await this.prisma.order.count({
-                where: {
-                    branchId: b.id,
-                    items: { some: { isBelowMin: true } }
-                }
-            });
+            // Pending Installments specifically for "Chờ khớp tiền"
+            const unconfirmedOrders = b.orders.filter(o =>
+                o.payments.some(p => p.paymentMethod === 'INSTALLMENT') && !o.isPaymentConfirmed
+            ).length;
 
-            const totalBranchOrders = b.orders.length;
-            if (totalBranchOrders > 0) {
-                const ratio = ordersWithLowPrice / totalBranchOrders;
-                if (ratio > 0.1) { // Alert if > 10%
-                    kpiAlerts.push({
-                        branchName: b.name,
-                        count: ordersWithLowPrice,
-                        total: totalBranchOrders,
-                        ratio: Math.round(ratio * 100)
-                    });
-                }
-            }
+            const pendingInvoices = revenueOrders.filter(o => !o.isInvoiceIssued).length;
 
             return {
+                id: b.id,
                 name: b.name,
                 revenue,
-                orderCount: totalBranchOrders
+                orderCount: revenueOrders.length,
+                lowPriceRatio: revenueOrders.length > 0 ? Math.round((lowPriceOrders / revenueOrders.length) * 100) : 0,
+                unconfirmedOrders,
+                pendingInvoices
             };
-        }));
+        });
 
-        branchStats.sort((a, b) => b.revenue - a.revenue);
-
-        // Diagnostic log
-        console.log(`[Dashboard] Revenue: ${totalRevenue}, Orders: ${ordersCount}, Employees: ${employeesCount}`);
+        // Sort by revenue for Top chart
+        const topBranches = [...branchStats].sort((a, b) => b.revenue - a.revenue).slice(0, 5);
 
         return {
-            role: 'DIRECTOR', // Keep consistent for frontend check, or update both
-            totalRevenue: totalRevenue,
-            totalOrders: Number(ordersCount),
-            activeEmployees: Number(employeesCount),
-            topBranches: branchStats.slice(0, 5),
-            kpiAlerts
+            role: 'DIRECTOR', // Keep for FE component matching
+            isGlobal: !branchId,
+            totalRevenue,
+            unconfirmedRevenue,
+            totalOrders: ordersCount,
+            unconfirmedCount,
+            unissuedInvoiceCount,
+            activeEmployees: employeesCount,
+            paymentMethodBreakdown,
+            paymentSummary: {
+                cash: paymentMethodBreakdown.find(p => p.method === 'CASH')?.amount || 0,
+                transfer: (paymentMethodBreakdown.find(p => p.method === 'TRANSFER_COMPANY')?.amount || 0) +
+                    (paymentMethodBreakdown.find(p => p.method === 'TRANSFER_PERSONAL')?.amount || 0),
+                card: paymentMethodBreakdown.find(p => p.method === 'CARD')?.amount || 0,
+                installment: paymentMethodBreakdown.find(p => p.method === 'INSTALLMENT')?.amount || 0,
+            },
+            topBranches,
+            branchDetails: branchStats.sort((a, b) => b.revenue - a.revenue),
+            kpiAlerts: branchStats.filter(s => s.lowPriceRatio > 10).map(s => ({
+                branchId: s.id,
+                branchName: s.name,
+                count: Math.round((s.lowPriceRatio / 100) * s.orderCount),
+                total: s.orderCount,
+                ratio: s.lowPriceRatio
+            }))
         };
     }
 
-    private async getManagerStats(branchId?: string, month?: number, year?: number) {
+    private async getManagerStats(branchId?: string, startStr?: string, endStr?: string) {
         if (!branchId) return { error: 'No branch assigned' };
 
         const now = new Date();
-        const targetMonth = month || now.getMonth() + 1;
-        const targetYear = year || now.getFullYear();
+        const startDate = startStr ? new Date(startStr) : new Date(now.getFullYear(), now.getMonth(), 1);
+        const endDate = endStr ? new Date(endStr) : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
 
-        const startDate = new Date(targetYear, targetMonth - 1, 1);
-        const endDate = new Date(targetYear, targetMonth, 0, 23, 59, 59, 999);
+        if (endStr && !endStr.includes('T')) {
+            endDate.setHours(23, 59, 59, 999);
+        }
 
         // ========= 1. Tính tổng doanh số chi nhánh =========
         const branchOrders = await this.prisma.orderSplit.findMany({
             where: {
                 employee: { branchId },
                 order: {
-                    orderDate: {
-                        gte: startDate,
-                        lte: endDate
-                    }
+                    OR: [
+                        {
+                            payments: { none: { paymentMethod: 'INSTALLMENT' } },
+                            orderDate: { gte: startDate, lte: endDate }
+                        },
+                        {
+                            payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                            isPaymentConfirmed: true,
+                            confirmedAt: { gte: startDate, lte: endDate }
+                        }
+                    ]
                 }
             },
             include: {
@@ -163,12 +287,92 @@ export class DashboardService {
         });
 
         const achievedRule = salaryRules.find(rule => branchRevenue >= Number(rule.targetRevenue));
-        const nextRule = salaryRules.reverse().find(rule => branchRevenue < Number(rule.targetRevenue));
+        const nextRule = [...salaryRules].reverse().find(rule => branchRevenue < Number(rule.targetRevenue));
 
+        // Các mốc để hiển thị KPI progress bar
+        const allMilestones = [...salaryRules].reverse().map(rule => ({
+            percent: rule.targetPercent,
+            targetRevenue: Number(rule.targetRevenue),
+            baseSalary: Number(rule.baseSalary),
+            bonusAmount: Number(rule.bonusAmount),
+            commissionRate: Number(rule.commissionPercent),
+            isAchieved: branchRevenue >= Number(rule.targetRevenue)
+        }));
+
+        // Nếu chưa đạt mốc nào → lương/thưởng = 0, vẫn trả đủ dữ liệu
         if (!achievedRule) {
+            // Vẫn cần tính operational stats trước khi return
+            const earlyOrderWhere: any = {
+                branchId,
+                OR: [
+                    {
+                        payments: { none: { paymentMethod: 'INSTALLMENT' } },
+                        orderDate: { gte: startDate, lte: endDate }
+                    },
+                    {
+                        payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                        isPaymentConfirmed: true,
+                        confirmedAt: { gte: startDate, lte: endDate }
+                    }
+                ]
+            };
+            const [earlyTotalOrders, earlyUnconfirmed, earlyUnissued, earlyActiveEmp, earlyEligibleOrders] = await Promise.all([
+                this.prisma.order.count({ where: earlyOrderWhere }),
+                this.prisma.order.count({
+                    where: {
+                        branchId,
+                        payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                        isPaymentConfirmed: false,
+                        orderDate: { gte: startDate, lte: endDate }
+                    }
+                }),
+                this.prisma.order.count({ where: { ...earlyOrderWhere, isInvoiceIssued: false } }),
+                this.prisma.employee.count({ where: { branchId, status: 'Đang làm việc' } }),
+                this.prisma.order.findMany({ where: earlyOrderWhere, select: { id: true } })
+            ]);
+            const earlyEligibleIds = earlyEligibleOrders.map(o => o.id);
+            const earlyMethods = ['CASH', 'TRANSFER_COMPANY', 'TRANSFER_PERSONAL', 'CARD', 'INSTALLMENT'];
+            const earlyBreakdown = await Promise.all(earlyMethods.map(async method => {
+                const sum = await this.prisma.payment.aggregate({
+                    where: { paymentMethod: method, orderId: { in: earlyEligibleIds } },
+                    _sum: { amount: true }
+                });
+                return { method, amount: Number(sum._sum.amount || 0) };
+            }));
+            const earlyCash = earlyBreakdown.find(p => p.method === 'CASH')?.amount || 0;
+            const earlyTransfer = earlyBreakdown.filter(p => ['TRANSFER_COMPANY', 'TRANSFER_PERSONAL', 'CARD'].includes(p.method)).reduce((s, p) => s + p.amount, 0);
+
             return {
                 role: 'MANAGER',
-                branchRevenue: 0,
+                branchRevenue,
+                monthlyRevenue: branchRevenue,
+                totalOrders: earlyTotalOrders,
+                cashAmount: earlyCash,
+                transferAmount: earlyTransfer,
+                unconfirmedCount: earlyUnconfirmed,
+                unissuedInvoiceCount: earlyUnissued,
+                activeEmployees: earlyActiveEmp,
+                paymentMethodBreakdown: earlyBreakdown,
+                baseSalary: 0,
+                baseBonus: 0,
+                actualBonus: 0,
+                commission: 0,
+                hotBonus: 0,
+                shippingFees: 0,
+                lowPriceStats: {
+                    count: lowPriceOrderCount,
+                    value: lowPriceRevenue,
+                    ratio: lowPriceRatio
+                },
+                performance: {
+                    milestone: 0,
+                    milestonePercent: 0,
+                    nextMilestone: nextRule ? Number(nextRule.targetRevenue) : null,
+                    isPenalty: false,
+                    isClemency: false
+                },
+                milestones: allMilestones,
+                netIncome: 0,
                 message: 'Chưa đạt mốc doanh số tối thiểu'
             };
         }
@@ -214,20 +418,70 @@ export class DashboardService {
         // ========= 8. Tính thực nhận =========
         const netIncome = baseSalary + actualBonus + commission + managerHotBonus + shippingFees;
 
-        // ========= 9. Lấy danh sách các mốc để hiển thị KPI =========
-        const allMilestones = salaryRules.reverse().map(rule => ({
-            percent: rule.targetPercent,
-            targetRevenue: Number(rule.targetRevenue),
-            baseSalary: Number(rule.baseSalary),
-            bonusAmount: Number(rule.bonusAmount),
-            commissionRate: Number(rule.commissionPercent),
-            isAchieved: branchRevenue >= Number(rule.targetRevenue)
+        // ========= 9. Lấy thống kê vận hành chi nhánh =========
+        const orderWhere: any = {
+            branchId,
+            OR: [
+                {
+                    payments: { none: { paymentMethod: 'INSTALLMENT' } },
+                    orderDate: { gte: startDate, lte: endDate }
+                },
+                {
+                    payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                    isPaymentConfirmed: true,
+                    confirmedAt: { gte: startDate, lte: endDate }
+                }
+            ]
+        };
+
+        const [totalOrders, unconfirmedCount, unissuedInvoiceCount, activeEmployees, eligibleOrders] = await Promise.all([
+            this.prisma.order.count({ where: orderWhere }),
+            this.prisma.order.count({
+                where: {
+                    branchId,
+                    payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                    isPaymentConfirmed: false,
+                    orderDate: { gte: startDate, lte: endDate }
+                }
+            }),
+            this.prisma.order.count({
+                where: { ...orderWhere, isInvoiceIssued: false }
+            }),
+            this.prisma.employee.count({
+                where: { branchId, status: 'Đang làm việc' }
+            }),
+            this.prisma.order.findMany({
+                where: orderWhere,
+                select: { id: true }
+            })
+        ]);
+
+        const eligibleOrderIds = eligibleOrders.map(o => o.id);
+        const paymentMethods = ['CASH', 'TRANSFER_COMPANY', 'TRANSFER_PERSONAL', 'CARD', 'INSTALLMENT'];
+        const paymentBreakdownRaw = await Promise.all(paymentMethods.map(async method => {
+            const sum = await this.prisma.payment.aggregate({
+                where: { paymentMethod: method, orderId: { in: eligibleOrderIds } },
+                _sum: { amount: true }
+            });
+            return { method, amount: Number(sum._sum.amount || 0) };
         }));
+
+        const cashAmount = paymentBreakdownRaw.find(p => p.method === 'CASH')?.amount || 0;
+        const transferAmount = paymentBreakdownRaw
+            .filter(p => ['TRANSFER_COMPANY', 'TRANSFER_PERSONAL', 'CARD'].includes(p.method))
+            .reduce((s, p) => s + p.amount, 0);
 
         return {
             role: 'MANAGER',
             branchRevenue,
             monthlyRevenue: branchRevenue,
+            totalOrders,
+            cashAmount,
+            transferAmount,
+            unconfirmedCount,
+            unissuedInvoiceCount,
+            activeEmployees,
+            paymentMethodBreakdown: paymentBreakdownRaw,
             baseSalary,
             baseBonus,
             actualBonus,
@@ -251,12 +505,16 @@ export class DashboardService {
         };
     }
 
-    private async getSaleStats(employeeId?: string) {
+    private async getSaleStats(employeeId?: string, startStr?: string, endStr?: string) {
         if (!employeeId) return { error: 'No employee record found' };
 
         const now = new Date();
-        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-        const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+        const startDate = startStr ? new Date(startStr) : new Date(now.getFullYear(), now.getMonth(), 1);
+        const endDate = endStr ? new Date(endStr) : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+        if (endStr && !endStr.includes('T')) {
+            endDate.setHours(23, 59, 59, 999);
+        }
 
         // 1. Fetch Salary Rules
         const salaryRules = await this.prisma.salesSalaryRule.findMany({
@@ -268,7 +526,17 @@ export class DashboardService {
             where: {
                 employeeId,
                 order: {
-                    orderDate: { gte: startOfMonth, lte: endOfMonth }
+                    OR: [
+                        {
+                            payments: { none: { paymentMethod: 'INSTALLMENT' } },
+                            orderDate: { gte: startDate, lte: endDate }
+                        },
+                        {
+                            payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                            isPaymentConfirmed: true,
+                            confirmedAt: { gte: startDate, lte: endDate }
+                        }
+                    ]
                 }
             },
             include: {
@@ -327,7 +595,19 @@ export class DashboardService {
         const deliveries = await this.prisma.delivery.findMany({
             where: {
                 driverId: employeeId,
-                createdAt: { gte: startOfMonth, lte: endOfMonth }
+                order: {
+                    OR: [
+                        {
+                            payments: { none: { paymentMethod: 'INSTALLMENT' } },
+                            orderDate: { gte: startDate, lte: endDate }
+                        },
+                        {
+                            payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                            isPaymentConfirmed: true,
+                            confirmedAt: { gte: startDate, lte: endDate }
+                        }
+                    ]
+                }
             }
         });
         const shippingFees = deliveries.reduce((sum, d) => sum + Number(d.deliveryFee), 0);
@@ -351,7 +631,15 @@ export class DashboardService {
 
         // 5. All-time revenue for total stats
         const allTimeRevenue = await this.prisma.orderSplit.aggregate({
-            where: { employeeId },
+            where: {
+                employeeId,
+                order: {
+                    OR: [
+                        { payments: { none: { paymentMethod: 'INSTALLMENT' } } },
+                        { payments: { some: { paymentMethod: 'INSTALLMENT' } }, isPaymentConfirmed: true }
+                    ]
+                }
+            },
             _sum: { splitAmount: true }
         });
 
@@ -380,15 +668,32 @@ export class DashboardService {
         };
     }
 
-    private async getTelesaleStats(employeeId?: string, userId?: string) {
-        const today = new Date();
-        const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+    private async getTelesaleStats(employeeId?: string, userId?: string, startStr?: string, endStr?: string) {
+        if (!employeeId) return { error: 'No employee record found' };
+
+        const now = new Date();
+        const startDate = startStr ? new Date(startStr) : new Date(now.getFullYear(), now.getMonth(), 1);
+        const endDate = endStr ? new Date(endStr) : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+        if (endStr && !endStr.includes('T')) {
+            endDate.setHours(23, 59, 59, 999);
+        }
 
         // Get ALL orders where source is 'FACEBOOK' for the current month
         const orders = await this.prisma.order.findMany({
             where: {
                 orderSource: { equals: 'FACEBOOK', mode: 'insensitive' },
-                createdAt: { gte: firstDay }
+                OR: [
+                    {
+                        payments: { none: { paymentMethod: 'INSTALLMENT' } },
+                        orderDate: { gte: startDate, lte: endDate }
+                    },
+                    {
+                        payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                        isPaymentConfirmed: true,
+                        confirmedAt: { gte: startDate, lte: endDate }
+                    }
+                ]
             }
         });
 
@@ -410,8 +715,16 @@ export class DashboardService {
         };
     }
 
-    private async getMarketingStats(employeeId?: string) {
+    private async getMarketingStats(employeeId?: string, startStr?: string, endStr?: string) {
         if (!employeeId) return { error: 'Employee not found' };
+
+        const now = new Date();
+        const startDate = startStr ? new Date(startStr) : new Date(now.getFullYear(), now.getMonth(), 1);
+        const endDate = endStr ? new Date(endStr) : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+        if (endStr && !endStr.includes('T')) {
+            endDate.setHours(23, 59, 59, 999);
+        }
 
         // 1. Get Marketing Rules for this employee
         const rules = await this.prisma.marketingSalaryRule.findMany({
@@ -427,16 +740,21 @@ export class DashboardService {
             };
         }
 
-        // For now, Marketing logic applies to all branches? 
-        // Or do we have a specific list of branches they manage?
-        // User image says "mỗi CN ds >= 500tr", implying we check all.
         const branches = await this.prisma.branch.findMany({
             include: {
                 orders: {
                     where: {
-                        createdAt: {
-                            gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1)
-                        }
+                        OR: [
+                            {
+                                payments: { none: { paymentMethod: 'INSTALLMENT' } },
+                                orderDate: { gte: startDate, lte: endDate }
+                            },
+                            {
+                                payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                                isPaymentConfirmed: true,
+                                confirmedAt: { gte: startDate, lte: endDate }
+                            }
+                        ]
                     },
                     select: { totalAmount: true }
                 }
@@ -471,5 +789,64 @@ export class DashboardService {
             totalReward,
             branchStats
         };
+    }
+
+    async getViolatedOrders(userId: string, branchId: string, startStr?: string, endStr?: string) {
+        const now = new Date();
+        const startDate = startStr ? new Date(startStr) : new Date(now.getFullYear(), now.getMonth(), 1);
+        const endDate = endStr ? new Date(endStr) : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+        if (endStr && !endStr.includes('T')) {
+            endDate.setHours(23, 59, 59, 999);
+        }
+
+        // Logic lọc đơn hàng giống getAccountingStats
+        const orderWhere: any = {
+            branchId,
+            items: {
+                some: { isBelowMin: true }
+            },
+            OR: [
+                {
+                    payments: { none: { paymentMethod: 'INSTALLMENT' } },
+                    orderDate: { gte: startDate, lte: endDate }
+                },
+                {
+                    payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                    isPaymentConfirmed: true,
+                    confirmedAt: { gte: startDate, lte: endDate }
+                }
+            ]
+        };
+
+        const orders = await this.prisma.order.findMany({
+            where: orderWhere,
+            include: {
+                items: {
+                    where: { isBelowMin: true },
+                    include: { product: true }
+                },
+                splits: {
+                    include: { employee: true },
+                    take: 1
+                }
+            },
+            orderBy: { createdAt: 'desc' },
+            take: 20
+        });
+
+        return orders.map(o => ({
+            id: o.id,
+            customerName: o.customerName,
+            totalAmount: Number(o.totalAmount),
+            createdAt: o.createdAt,
+            employeeName: o.splits[0]?.employee?.fullName || o.staffCode || 'N/A',
+            violatedItems: o.items.map(i => ({
+                productName: i.product.name,
+                unitPrice: Number(i.unitPrice),
+                minPrice: Number(i.product.minPrice),
+                quantity: i.quantity
+            }))
+        }));
     }
 }

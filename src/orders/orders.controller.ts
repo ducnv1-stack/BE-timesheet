@@ -39,6 +39,24 @@ export class OrdersController {
         return this.ordersService.confirmDelivery(id, userId);
     }
 
+    @Patch(':id/confirm-payment')
+    confirmPayment(
+        @Param('id') id: string,
+        @Query('userId') userId: string
+    ) {
+        if (!userId) throw new BadRequestException('userId is required');
+        return this.ordersService.confirmPayment(id, userId);
+    }
+
+    @Patch(':id/confirm-invoice')
+    confirmInvoice(
+        @Param('id') id: string,
+        @Query('userId') userId: string
+    ) {
+        if (!userId) throw new BadRequestException('userId is required');
+        return this.ordersService.confirmInvoice(id, userId);
+    }
+
     @Get(':id')
     findOne(@Param('id') id: string) {
         return this.ordersService.findOne(id);
@@ -48,9 +66,39 @@ export class OrdersController {
     findAll(
         @Query('userId') userId?: string,
         @Query('roleCode') roleCode?: string,
-        @Query('branchId') branchId?: string
+        @Query('branchId') branchId?: string,
+        @Query('page') page?: number,
+        @Query('limit') limit?: number,
+        @Query('search') search?: string,
+        @Query('status') status?: string,
+        @Query('paymentStatus') paymentStatus?: string,
+        @Query('paymentMethod') paymentMethod?: string,
+        @Query('invoiceStatus') invoiceStatus?: string,
+        @Query('timeFilter') timeFilter?: string,
+        @Query('tab') tab?: string,
+        @Query('employeeId') employeeId?: string,
+        @Query('lowPrice') lowPrice?: string,
+        @Query('startDate') startDate?: string,
+        @Query('endDate') endDate?: string
     ) {
-        return this.ordersService.findAll(userId, roleCode, branchId);
+        return this.ordersService.findAll(
+            userId,
+            roleCode,
+            branchId,
+            page,
+            limit,
+            search,
+            status,
+            paymentStatus,
+            paymentMethod,
+            invoiceStatus,
+            timeFilter,
+            tab,
+            employeeId,
+            lowPrice,
+            startDate,
+            endDate
+        );
     }
 
     @Delete(':id')

@@ -321,7 +321,17 @@ export class EmployeesService {
             where: {
                 employeeId: id,
                 order: {
-                    orderDate: { gte: startDate, lte: endDate }
+                    OR: [
+                        {
+                            payments: { none: { paymentMethod: 'INSTALLMENT' } },
+                            orderDate: { gte: startDate, lte: endDate }
+                        },
+                        {
+                            payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                            isPaymentConfirmed: true,
+                            confirmedAt: { gte: startDate, lte: endDate }
+                        }
+                    ]
                 }
             },
             include: {

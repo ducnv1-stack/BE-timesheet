@@ -50,6 +50,8 @@ model User {
   role     Role      @relation(fields: [roleId], references: [id])
   employee Employee?
   ordersCreated Order[]
+  ordersConfirmed Order[] @relation("OrderConfirmer")
+  ordersIssuedInvoices Order[] @relation("OrderInvoiceIssuer")
 
   @@map("users")
 }
@@ -105,10 +107,21 @@ model Order {
   productBonusAmount Decimal  @default(0) @map("product_bonus_amount") @db.Decimal(20, 2)
   note               String?  @db.Text
   createdBy          String   @map("created_by") @db.Uuid
+  isPaymentConfirmed Boolean  @default(false) @map("is_payment_confirmed")
+  confirmedById      String?  @map("confirmed_by_id") @db.Uuid
+  confirmedAt        DateTime? @map("confirmed_at")
   createdAt          DateTime @default(now()) @map("created_at")
 
   branch    Branch      @relation(fields: [branchId], references: [id])
   creator   User        @relation(fields: [createdBy], references: [id])
+  confirmer User?       @relation("OrderConfirmer", fields: [confirmedById], references: [id])
+
+  // VAT Invoice management
+  isInvoiceIssued    Boolean   @default(false) @map("is_invoice_issued")
+  invoiceIssuedAt     DateTime? @map("invoice_issued_at")
+  invoiceIssuedById   String?   @map("invoice_issued_by_id") @db.Uuid
+  invoiceIssuer       User?     @relation("OrderInvoiceIssuer", fields: [invoiceIssuedById], references: [id])
+
   items     OrderItem[]
   splits    OrderSplit[]
   payments  Payment[]

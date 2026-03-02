@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { Decimal } from '@prisma/client/runtime/library';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class OrdersService {
@@ -90,7 +91,7 @@ export class OrdersService {
                             employeeId: s.employeeId,
                             branchId: s.branchId,
                             splitPercent: s.splitPercent,
-                            splitAmount: totalAmount.mul(s.splitPercent).div(100),
+                            splitAmount: s.splitAmount !== undefined ? new Decimal(s.splitAmount) : totalAmount.mul(s.splitPercent).div(100),
                         })),
                     },
                     payments: {
@@ -250,7 +251,7 @@ export class OrdersService {
                             employeeId: s.employeeId,
                             branchId: s.branchId,
                             splitPercent: s.splitPercent,
-                            splitAmount: totalAmount.mul(s.splitPercent).div(100),
+                            splitAmount: s.splitAmount !== undefined ? new Decimal(s.splitAmount) : totalAmount.mul(s.splitPercent).div(100),
                         })),
                     } : undefined,
                     payments: payments ? {
@@ -378,89 +379,279 @@ export class OrdersService {
         }));
     }
 
-    async findAll(userId?: string, roleCode?: string, branchId?: string) {
+    async findAll(
+        userId?: string,
+        roleCode?: string,
+        branchId?: string,
+        page: number = 1,
+        limit: number = 50,
+        search?: string,
+        status?: string,
+        paymentStatus?: string,
+        paymentMethod?: string,
+        invoiceStatus?: string,
+        timeFilter?: string,
+        tab?: string,
+        employeeId?: string,
+        lowPrice?: string,
+        startDate?: string,
+        endDate?: string
+    ) {
         let whereClause: any = {};
 
+        // 1. Role-based Base Filter (Security & Scope)
         if (userId && roleCode) {
             if (['SALE', 'TELESALE', 'DRIVER'].includes(roleCode)) {
-                // SALE/TELESALE/DRIVER: See orders they created OR are assigned to (in splits)
-                // TELESALE: Special case - also see ALL orders where source is 'FACEBOOK'
                 const orConditions: any[] = [
                     { createdBy: userId },
-                    {
-                        splits: {
-                            some: {
-                                employee: {
-                                    userId: userId
-                                }
-                            }
-                        }
-                    },
-                    {
-                        deliveries: {
-                            some: {
-                                driver: {
-                                    userId: userId
-                                }
-                            }
-                        }
-                    }
+                    { splits: { some: { employee: { userId: userId } } } },
+                    { deliveries: { some: { driver: { userId: userId } } } }
                 ];
 
                 if (roleCode === 'TELESALE') {
-                    orConditions.push({
-                        orderSource: { equals: 'FACEBOOK', mode: 'insensitive' }
-                    });
+                    orConditions.push({ orderSource: { equals: 'FACEBOOK', mode: 'insensitive' } });
                 }
-
-                whereClause = {
-                    OR: orConditions
-                };
-            } else if (['MANAGER', 'ACCOUNTANT'].includes(roleCode)) {
-                // MANAGER/ACCOUNTANT: See all orders from their branch
-                if (branchId) {
-                    whereClause = { branchId };
+                whereClause.OR = orConditions;
+            } else if (['MANAGER', 'BRANCH_ACCOUNTANT'].includes(roleCode)) {
+                if (branchId) whereClause.branchId = branchId;
+            } else if (['DIRECTOR', 'CHIEF_ACCOUNTANT', 'ACCOUNTANT', 'MARKETING'].includes(roleCode)) {
+                // Global view - Only filter branch if explicitly provided
+                if (branchId && branchId !== 'all') {
+                    whereClause.branchId = branchId;
                 }
-            } else if (['DIRECTOR', 'CHIEF_ACCOUNTANT'].includes(roleCode)) {
-                // DIRECTOR/CHIEF_ACCOUNTANT: See all orders (no filter)
-                whereClause = {};
             }
         } else if (userId) {
-            // Fallback: If no roleCode provided, use old logic
-            whereClause = { createdBy: userId };
+            whereClause.createdBy = userId;
         }
 
-        return this.prisma.order.findMany({
-            where: whereClause,
-            include: {
+        // 2. Global Filters (Search, Status, Time, etc.)
+        const globalFilters: any[] = [];
+
+        if (search) {
+            globalFilters.push({
+                OR: [
+                    { customerName: { contains: search, mode: 'insensitive' } },
+                    { customerPhone: { contains: search } },
+                ]
+            });
+        }
+
+        if (employeeId && employeeId !== 'all') {
+            globalFilters.push({
+                OR: [
+                    { createdBy: employeeId },
+                    { splits: { some: { employeeId } } }
+                ]
+            });
+        }
+
+        if (lowPrice === 'true') {
+            console.log('[OrdersService] Applying lowPrice filter');
+            globalFilters.push({
                 items: {
-                    include: {
-                        product: true
-                    }
-                },
-                splits: {
-                    include: {
-                        employee: true,
-                        branch: true
-                    }
-                },
-                payments: true,
-                branch: true,
-                deliveries: {
-                    include: {
-                        driver: true
-                    }
-                },
-                creator: {
-                    include: {
-                        employee: true
+                    some: {
+                        isBelowMin: true
                     }
                 }
-            },
-            orderBy: {
-                createdAt: 'desc'
+            });
+        }
+
+        if (status && status !== 'all') {
+            globalFilters.push({ status });
+        }
+
+        if (paymentStatus === 'pending') {
+            globalFilters.push({
+                isPaymentConfirmed: false,
+                payments: { some: { paymentMethod: 'INSTALLMENT' } }
+            });
+        } else if (paymentStatus === 'confirmed') {
+            globalFilters.push({ isPaymentConfirmed: true });
+        }
+
+        if (paymentMethod && paymentMethod !== 'all') {
+            globalFilters.push({ payments: { some: { paymentMethod } } });
+        }
+
+        if (invoiceStatus === 'pending') {
+            globalFilters.push({
+                isInvoiceIssued: false,
+                OR: [
+                    { payments: { none: { paymentMethod: 'INSTALLMENT' } } },
+                    {
+                        payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                        isPaymentConfirmed: true
+                    }
+                ]
+            });
+        } else if (invoiceStatus === 'issued') {
+            globalFilters.push({ isInvoiceIssued: true });
+        }
+
+        if (startDate || endDate) {
+            const dateFilter: any = {};
+            if (startDate) {
+                const start = new Date(startDate);
+                start.setHours(0, 0, 0, 0);
+                dateFilter.gte = start;
             }
-        });
+            if (endDate) {
+                const end = new Date(endDate);
+                end.setHours(23, 59, 59, 999);
+                dateFilter.lte = end;
+            }
+            const dashboardDateFilter = {
+                OR: [
+                    {
+                        payments: { none: { paymentMethod: 'INSTALLMENT' } },
+                        orderDate: dateFilter
+                    },
+                    {
+                        payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                        isPaymentConfirmed: true,
+                        confirmedAt: dateFilter
+                    },
+                    {
+                        payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                        isPaymentConfirmed: false,
+                        orderDate: dateFilter
+                    }
+                ]
+            };
+            globalFilters.push(dashboardDateFilter);
+        } else if (timeFilter && timeFilter !== 'all') {
+            const now = new Date();
+            let start = new Date();
+            if (timeFilter === 'today') {
+                start.setHours(0, 0, 0, 0);
+            } else if (timeFilter === 'week') {
+                start.setDate(now.getDate() - 7);
+            } else if (timeFilter === 'month') {
+                start.setMonth(now.getMonth() - 1);
+            }
+            const dashboardTimeFilter = {
+                OR: [
+                    {
+                        payments: { none: { paymentMethod: 'INSTALLMENT' } },
+                        orderDate: { gte: start }
+                    },
+                    {
+                        payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                        isPaymentConfirmed: true,
+                        confirmedAt: { gte: start }
+                    },
+                    {
+                        payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                        isPaymentConfirmed: false,
+                        orderDate: { gte: start }
+                    }
+                ]
+            };
+            globalFilters.push(dashboardTimeFilter);
+        }
+
+        // 3. Tab Specific Filter
+        let tabFilter: any = null;
+        if (tab && tab !== 'all') {
+            if (tab === 'created' && userId) {
+                tabFilter = { createdBy: userId };
+            } else if (tab === 'assigned' && userId) {
+                tabFilter = {
+                    AND: [
+                        { splits: { some: { employee: { userId: userId } } } },
+                        { createdBy: { not: userId } }
+                    ]
+                };
+            } else if (tab === 'installment') {
+                tabFilter = {
+                    AND: [
+                        { payments: { some: { paymentMethod: 'INSTALLMENT' } } },
+                        { isPaymentConfirmed: false }
+                    ]
+                };
+            } else if (tab === 'invoice') {
+                tabFilter = { isInvoiceIssued: false };
+            }
+        }
+
+        // Base where for the main query
+        const mainWhere: Prisma.OrderWhereInput = { ...whereClause };
+        const mainFilters = [...globalFilters];
+        if (tabFilter) mainFilters.push(tabFilter);
+        if (mainFilters.length > 0) {
+            mainWhere.AND = [...(mainWhere.AND as any[] || []), ...mainFilters];
+        }
+
+        // 4. Pagination & Fetch
+        const skip = (page - 1) * limit;
+        const take = Number(limit);
+
+        const [orders, total] = await Promise.all([
+            this.prisma.order.findMany({
+                where: mainWhere,
+                include: {
+                    items: { include: { product: true } },
+                    splits: { include: { employee: true, branch: true } },
+                    payments: true,
+                    branch: true,
+                    deliveries: { include: { driver: true } },
+                    creator: { include: { employee: true } },
+                    confirmer: { include: { employee: true } }
+                },
+                orderBy: { createdAt: 'desc' },
+                skip,
+                take,
+            }),
+            this.prisma.order.count({ where: mainWhere })
+        ]);
+
+        // 5. Calculate Counts for Tabs (Correct approach for UI)
+        // Use globalFilters as base for all tab counts to ensure isolation
+        const countBaseFilters = [...(whereClause.AND as any[] || []), ...globalFilters];
+
+        const [all, created, assigned, installment, invoice] = await Promise.all([
+            this.prisma.order.count({
+                where: { ...whereClause, AND: countBaseFilters }
+            }),
+            this.prisma.order.count({
+                where: { ...whereClause, AND: [...countBaseFilters, { createdBy: userId }] }
+            }),
+            this.prisma.order.count({
+                where: { ...whereClause, AND: [...countBaseFilters, { splits: { some: { employee: { userId: userId } } } }, { createdBy: { not: userId } }] }
+            }),
+            this.prisma.order.count({
+                where: { ...whereClause, AND: [...countBaseFilters, { payments: { some: { paymentMethod: 'INSTALLMENT' } } }, { isPaymentConfirmed: false }] }
+            }),
+            this.prisma.order.count({
+                where: {
+                    ...whereClause,
+                    AND: [
+                        ...countBaseFilters,
+                        { isInvoiceIssued: false },
+                        {
+                            OR: [
+                                { payments: { none: { paymentMethod: 'INSTALLMENT' } } },
+                                {
+                                    payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                                    isPaymentConfirmed: true
+                                }
+                            ]
+                        }
+                    ]
+                }
+            })
+        ]);
+
+        return {
+            data: orders,
+            meta: {
+                total,
+                page: Number(page),
+                limit: take,
+                totalPages: Math.ceil(total / take),
+                counts: { all, created, assigned, installment, invoice }
+            }
+        };
     }
 
     async remove(id: string, userId: string) {
@@ -504,6 +695,100 @@ export class OrdersService {
             });
 
             return { message: 'Order deleted successfully' };
+        });
+    }
+
+    async confirmPayment(id: string, userId: string) {
+        const order = await this.prisma.order.findUnique({
+            where: { id },
+            include: {
+                items: { include: { product: true } },
+                splits: { include: { employee: true, branch: true } },
+                payments: true,
+                branch: true,
+                deliveries: { include: { driver: true } },
+            }
+        });
+
+        if (!order) throw new BadRequestException('Order not found');
+
+        return this.prisma.$transaction(async (tx) => {
+            const updatedOrder = await tx.order.update({
+                where: { id },
+                data: {
+                    isPaymentConfirmed: true,
+                    confirmedById: userId,
+                    confirmedAt: new Date(),
+                },
+                include: {
+                    items: { include: { product: true } },
+                    splits: { include: { employee: true, branch: true } },
+                    payments: true,
+                    branch: true,
+                    deliveries: { include: { driver: true } },
+                    confirmer: { include: { employee: true } },
+                }
+            });
+
+            // Audit Log
+            await tx.orderAuditLog.create({
+                data: {
+                    orderId: id,
+                    changedBy: userId,
+                    action: 'update',
+                    oldData: order as any,
+                    newData: updatedOrder as any,
+                },
+            });
+
+            return updatedOrder;
+        });
+    }
+
+    async confirmInvoice(id: string, userId: string) {
+        const order = await this.prisma.order.findUnique({
+            where: { id },
+            include: {
+                items: { include: { product: true } },
+                splits: { include: { employee: true, branch: true } },
+                payments: true,
+                branch: true,
+                deliveries: { include: { driver: true } },
+            }
+        });
+
+        if (!order) throw new BadRequestException('Order not found');
+
+        return this.prisma.$transaction(async (tx) => {
+            const updatedOrder = await tx.order.update({
+                where: { id },
+                data: {
+                    isInvoiceIssued: true,
+                    invoiceIssuedById: userId,
+                    invoiceIssuedAt: new Date(),
+                },
+                include: {
+                    items: { include: { product: true } },
+                    splits: { include: { employee: true, branch: true } },
+                    payments: true,
+                    branch: true,
+                    deliveries: { include: { driver: true } },
+                    invoiceIssuer: { include: { employee: true } },
+                }
+            });
+
+            // Audit Log
+            await tx.orderAuditLog.create({
+                data: {
+                    orderId: id,
+                    changedBy: userId,
+                    action: 'update',
+                    oldData: order as any,
+                    newData: updatedOrder as any,
+                },
+            });
+
+            return updatedOrder;
         });
     }
 
