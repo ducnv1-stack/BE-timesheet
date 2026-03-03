@@ -1,5 +1,29 @@
-import { IsString, IsNotEmpty, IsArray, ValidateNested, IsNumber, IsOptional, Min, Max, IsUUID } from 'class-validator';
+import { IsString, IsNotEmpty, IsArray, ValidateNested, IsNumber, IsOptional, Min, Max, IsUUID, IsEnum } from 'class-validator';
 import { Type } from 'class-transformer';
+
+export class CreateDeliveryDto {
+    @IsOptional()
+    @IsUUID()
+    driverId?: string;
+
+    @IsString()
+    @IsNotEmpty()
+    @IsEnum(['COMPANY_DRIVER', 'EXTERNAL_DRIVER', 'STAFF_DELIVERER', 'SELLING_SALE', 'OTHER_SALE'])
+    category: string;
+
+    @IsOptional()
+    @IsNumber()
+    deliveryFee?: number;
+}
+
+export class CreateOrderGiftDto {
+    @IsUUID()
+    giftId: string;
+
+    @IsNumber()
+    @Min(1)
+    quantity: number;
+}
 
 export class CreateOrderItemDto {
     @IsUUID()
@@ -76,13 +100,11 @@ export class CreateOrderDto {
     @IsUUID()
     createdBy?: string;
 
+    @IsArray()
     @IsOptional()
-    @IsUUID()
-    driverId?: string;
-
-    @IsOptional()
-    @IsString()
-    driverType?: string;
+    @ValidateNested({ each: true })
+    @Type(() => CreateDeliveryDto)
+    deliveries?: CreateDeliveryDto[];
 
     @IsString()
     @IsNotEmpty()
@@ -113,5 +135,15 @@ export class CreateOrderDto {
 
     @IsNumber()
     @IsOptional()
+    totalAmount?: number;
+
+    @IsNumber()
+    @IsOptional()
     giftAmount?: number;
+
+    @IsArray()
+    @IsOptional()
+    @ValidateNested({ each: true })
+    @Type(() => CreateOrderGiftDto)
+    gifts?: CreateOrderGiftDto[];
 }

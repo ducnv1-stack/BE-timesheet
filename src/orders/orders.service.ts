@@ -10,7 +10,7 @@ export class OrdersService {
     constructor(private prisma: PrismaService) { }
 
     async create(createOrderDto: CreateOrderDto, userId: string) {
-        const { items, splits, payments, driverId, driverType, ...orderData } = createOrderDto;
+        const { items, splits, payments, gifts, deliveries, ...orderData } = createOrderDto;
 
         return this.prisma.$transaction(async (tx) => {
             // 1. Calculate and validate items
@@ -66,6 +66,25 @@ export class OrdersService {
                 }),
             );
 
+            // 1.1 Calculate Gifts
+            let totalGiftAmount = new Decimal(0);
+            const giftProcessing = gifts ? await Promise.all(
+                gifts.map(async (g: any) => {
+                    const gift = await tx.gift.findUnique({ where: { id: g.giftId } });
+                    if (!gift) throw new BadRequestException(`Gift ${g.giftId} not found`);
+
+                    const gAmount = new Decimal(gift.price).mul(g.quantity);
+                    totalGiftAmount = totalGiftAmount.add(gAmount);
+
+                    return {
+                        giftId: g.giftId,
+                        quantity: g.quantity,
+                    };
+                })
+            ) : [];
+
+            const netRevenue = totalAmount.sub(totalGiftAmount);
+
             // Validate splits (Total Split Percent must be 100)
             const totalSplitPercent = splits.reduce((sum: number, s: any) => sum + s.splitPercent, 0);
             if (Math.abs(totalSplitPercent - 100) > 0.01) {
@@ -77,15 +96,20 @@ export class OrdersService {
                 data: {
                     ...orderData,
                     totalAmount,
-                    // @ts-ignore
-                    status: driverId ? 'assigned' : 'pending',
+                    giftAmount: totalGiftAmount,
+                    status: (deliveries && deliveries.length > 0) ? 'assigned' : 'pending',
                     productBonusAmount: calculatedProductBonusTotal,
                     createdBy: userId,
-                    orderDate: new Date(orderData.orderDate),
-                    customerCardIssueDate: orderData.customerCardIssueDate ? new Date(orderData.customerCardIssueDate) : null,
+                    orderDate: orderData.orderDate ? new Date(orderData.orderDate) : new Date(),
+                    customerCardIssueDate: (orderData.customerCardIssueDate && orderData.customerCardIssueDate.trim() !== '')
+                        ? new Date(orderData.customerCardIssueDate)
+                        : null,
                     items: {
                         create: itemProcessing,
                     },
+                    gifts: gifts ? {
+                        create: giftProcessing,
+                    } : undefined,
                     splits: {
                         create: splits.map((s: any) => ({
                             employeeId: s.employeeId,
@@ -101,12 +125,23 @@ export class OrdersService {
                             paidAt: new Date(p.paidAt),
                         })),
                     },
-                    deliveries: driverId ? {
-                        create: {
-                            driverId: driverId,
-                            driverType: driverType || 'internal',
-                            deliveryFee: driverType === 'sale' ? 100000 : 50000,
-                        }
+                    deliveries: (deliveries && deliveries.length > 0) ? {
+                        create: deliveries.map((d: any) => {
+                            let fee = 0;
+                            if (d.category === 'COMPANY_DRIVER') fee = 50000;
+                            else if (d.category === 'EXTERNAL_DRIVER') fee = 0;
+                            else if (d.category === 'STAFF_DELIVERER') fee = 70000;
+                            else if (d.category === 'SELLING_SALE') fee = 100000;
+                            else if (d.category === 'OTHER_SALE') fee = 200000;
+
+                            return {
+                                driverId: d.driverId || null,
+                                driverType: d.category, // map to legacy field just in case
+                                category: d.category,
+                                role: (d.category === 'COMPANY_DRIVER' || d.category === 'EXTERNAL_DRIVER') ? 'DRIVER' : 'STAFF',
+                                deliveryFee: d.deliveryFee !== undefined ? d.deliveryFee : fee,
+                            };
+                        })
                     } : undefined,
                 },
             });
@@ -116,6 +151,7 @@ export class OrdersService {
                 where: { id: order.id },
                 include: {
                     items: { include: { product: true } },
+                    gifts: { include: { gift: true } },
                     splits: { include: { employee: true, branch: true } },
                     payments: true,
                     branch: true,
@@ -143,12 +179,13 @@ export class OrdersService {
     }
 
     async update(id: string, updateOrderDto: UpdateOrderDto, userId: string) {
-        const { items, splits, payments, driverId, driverType, ...orderData } = updateOrderDto;
+        const { items, splits, payments, gifts, deliveries, ...orderData } = updateOrderDto;
 
         const originalOrder = await this.prisma.order.findUnique({
             where: { id },
             include: {
                 items: { include: { product: true } },
+                gifts: { include: { gift: true } },
                 splits: { include: { employee: true, branch: true } },
                 payments: true,
                 branch: true,
@@ -218,6 +255,24 @@ export class OrdersService {
                 calculatedProductBonusTotal = originalOrder.productBonusAmount;
             }
 
+            // 1.1 Calculate Gifts if provided or use original
+            let totalGiftAmount = originalOrder.giftAmount;
+            let giftProcessing: any[] = [];
+            if (gifts) {
+                totalGiftAmount = new Decimal(0);
+                giftProcessing = await Promise.all(
+                    gifts.map(async (g: any) => {
+                        const gift = await tx.gift.findUnique({ where: { id: g.giftId } });
+                        if (!gift) throw new BadRequestException(`Gift ${g.giftId} not found`);
+                        const gAmount = new Decimal(gift.price).mul(g.quantity);
+                        totalGiftAmount = totalGiftAmount.add(gAmount);
+                        return { giftId: g.giftId, quantity: g.quantity };
+                    })
+                );
+            }
+
+            const netRevenue = totalAmount.sub(totalGiftAmount);
+
             // 2. Validate splits
             if (splits) {
                 const totalSplitPercent = splits.reduce((sum, s) => sum + s.splitPercent, 0);
@@ -232,10 +287,10 @@ export class OrdersService {
                 data: {
                     ...orderData,
                     totalAmount,
-                    // @ts-ignore
-                    status: (driverId && (originalOrder as any).status === 'pending')
+                    giftAmount: totalGiftAmount,
+                    status: (deliveries && deliveries.length > 0 && (originalOrder as any).status === 'pending')
                         ? 'assigned'
-                        : (!driverId && (originalOrder as any).status === 'assigned')
+                        : (deliveries === null && (originalOrder as any).status === 'assigned') // if explicitly cleared
                             ? 'pending'
                             : undefined,
                     productBonusAmount: calculatedProductBonusTotal,
@@ -244,6 +299,10 @@ export class OrdersService {
                     items: items ? {
                         deleteMany: {},
                         create: itemProcessing,
+                    } : undefined,
+                    gifts: gifts ? {
+                        deleteMany: {},
+                        create: giftProcessing,
                     } : undefined,
                     splits: splits ? {
                         deleteMany: {},
@@ -262,15 +321,24 @@ export class OrdersService {
                             paidAt: new Date(p.paidAt),
                         })),
                     } : undefined,
-                    deliveries: driverId !== undefined ? {
+                    deliveries: (deliveries !== undefined) ? {
                         deleteMany: {},
-                        ...(driverId ? {
-                            create: {
-                                driverId: driverId,
-                                driverType: driverType || 'internal',
-                                deliveryFee: driverType === 'sale' ? 100000 : 50000,
-                            }
-                        } : {})
+                        create: (deliveries || []).map((d: any) => {
+                            let fee = 0;
+                            if (d.category === 'COMPANY_DRIVER') fee = 50000;
+                            else if (d.category === 'EXTERNAL_DRIVER') fee = 0;
+                            else if (d.category === 'STAFF_DELIVERER') fee = 70000;
+                            else if (d.category === 'SELLING_SALE') fee = 100000;
+                            else if (d.category === 'OTHER_SALE') fee = 200000;
+
+                            return {
+                                driverId: d.driverId || null,
+                                driverType: d.category,
+                                category: d.category,
+                                role: (d.category === 'COMPANY_DRIVER' || d.category === 'EXTERNAL_DRIVER') ? 'DRIVER' : 'STAFF',
+                                deliveryFee: d.deliveryFee !== undefined ? d.deliveryFee : fee,
+                            };
+                        })
                     } : undefined,
                 },
             });
@@ -280,6 +348,7 @@ export class OrdersService {
                 where: { id },
                 include: {
                     items: { include: { product: true } },
+                    gifts: { include: { gift: true } },
                     splits: { include: { employee: true, branch: true } },
                     payments: true,
                     branch: true,
@@ -312,6 +381,7 @@ export class OrdersService {
             where: { id },
             include: {
                 items: { include: { product: true } },
+                gifts: { include: { gift: true } },
                 splits: { include: { employee: true, branch: true } },
                 payments: true,
                 branch: true,
@@ -352,7 +422,7 @@ export class OrdersService {
                     }
                 ]
             };
-        } else if (role === 'MANAGER' || role === 'ACCOUNTANT') {
+        } else if (role === 'MANAGER') {
             where = { order: { branchId: user.employee?.branchId } };
         }
 
@@ -384,20 +454,24 @@ export class OrdersService {
         roleCode?: string,
         branchId?: string,
         page: number = 1,
-        limit: number = 50,
+        limit: number = 20,
         search?: string,
         status?: string,
         paymentStatus?: string,
         paymentMethod?: string,
         invoiceStatus?: string,
         timeFilter?: string,
+        startDate?: string,
+        endDate?: string,
         tab?: string,
         employeeId?: string,
         lowPrice?: string,
-        startDate?: string,
-        endDate?: string
+        excludeInstallment?: string,
+        deliveryType?: string
     ) {
-        let whereClause: any = {};
+        let whereClause: any = {
+            status: { notIn: ['canceled', 'rejected'] }
+        };
 
         // 1. Role-based Base Filter (Security & Scope)
         if (userId && roleCode) {
@@ -412,9 +486,9 @@ export class OrdersService {
                     orConditions.push({ orderSource: { equals: 'FACEBOOK', mode: 'insensitive' } });
                 }
                 whereClause.OR = orConditions;
-            } else if (['MANAGER', 'BRANCH_ACCOUNTANT'].includes(roleCode)) {
+            } else if (['MANAGER'].includes(roleCode)) {
                 if (branchId) whereClause.branchId = branchId;
-            } else if (['DIRECTOR', 'CHIEF_ACCOUNTANT', 'ACCOUNTANT', 'MARKETING'].includes(roleCode)) {
+            } else if (['DIRECTOR', 'CHIEF_ACCOUNTANT', 'ACCOUNTANT', 'BRANCH_ACCOUNTANT', 'MARKETING'].includes(roleCode)) {
                 // Global view - Only filter branch if explicitly provided
                 if (branchId && branchId !== 'all') {
                     whereClause.branchId = branchId;
@@ -463,7 +537,7 @@ export class OrdersService {
         if (paymentStatus === 'pending') {
             globalFilters.push({
                 isPaymentConfirmed: false,
-                payments: { some: { paymentMethod: 'INSTALLMENT' } }
+                ...(excludeInstallment === 'true' ? { payments: { none: { paymentMethod: 'INSTALLMENT' } } } : {})
             });
         } else if (paymentStatus === 'confirmed') {
             globalFilters.push({ isPaymentConfirmed: true });
@@ -473,19 +547,30 @@ export class OrdersService {
             globalFilters.push({ payments: { some: { paymentMethod } } });
         }
 
+        if (excludeInstallment === 'true') {
+            globalFilters.push({
+                payments: {
+                    none: { paymentMethod: 'INSTALLMENT' }
+                }
+            });
+        }
+
         if (invoiceStatus === 'pending') {
             globalFilters.push({
-                isInvoiceIssued: false,
-                OR: [
-                    { payments: { none: { paymentMethod: 'INSTALLMENT' } } },
-                    {
-                        payments: { some: { paymentMethod: 'INSTALLMENT' } },
-                        isPaymentConfirmed: true
-                    }
-                ]
+                isInvoiceIssued: false
             });
         } else if (invoiceStatus === 'issued') {
             globalFilters.push({ isInvoiceIssued: true });
+        }
+
+        if (deliveryType && deliveryType !== 'all') {
+            globalFilters.push({
+                deliveries: {
+                    some: {
+                        category: deliveryType === 'company' ? 'COMPANY_DRIVER' : 'EXTERNAL_DRIVER'
+                    }
+                }
+            });
         }
 
         if (startDate || endDate) {
@@ -500,25 +585,36 @@ export class OrdersService {
                 end.setHours(23, 59, 59, 999);
                 dateFilter.lte = end;
             }
-            const dashboardDateFilter = {
-                OR: [
-                    {
-                        payments: { none: { paymentMethod: 'INSTALLMENT' } },
-                        orderDate: dateFilter
-                    },
-                    {
-                        payments: { some: { paymentMethod: 'INSTALLMENT' } },
-                        isPaymentConfirmed: true,
-                        confirmedAt: dateFilter
-                    },
-                    {
-                        payments: { some: { paymentMethod: 'INSTALLMENT' } },
-                        isPaymentConfirmed: false,
-                        orderDate: dateFilter
-                    }
-                ]
-            };
-            globalFilters.push(dashboardDateFilter);
+
+            // Phân biệt logic lọc ngày:
+            // 1. Operational (Các tab Đợi...): Lấy tất cả đơn tồn đọng tính đến endDate
+            // 2. Reporting (Tab Tất cả / Báo cáo): Lấy theo logic tính doanh thu chuẩn của Dashboard
+            const isOperational = tab === 'installment' || tab === 'invoice' ||
+                paymentStatus === 'pending' || invoiceStatus === 'pending';
+
+            if (isOperational) {
+                globalFilters.push({ orderDate: { lte: dateFilter.lte } });
+            } else {
+                globalFilters.push({
+                    OR: [
+                        {
+                            payments: { none: { paymentMethod: 'INSTALLMENT' } },
+                            orderDate: dateFilter
+                        },
+                        {
+                            payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                            isPaymentConfirmed: true,
+                            confirmedAt: dateFilter
+                        },
+                        {
+                            // Include pending installments in the date range so "All" tab shows all created orders
+                            payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                            isPaymentConfirmed: false,
+                            orderDate: dateFilter
+                        }
+                    ]
+                });
+            }
         } else if (timeFilter && timeFilter !== 'all') {
             const now = new Date();
             let start = new Date();
@@ -591,6 +687,7 @@ export class OrdersService {
                 where: mainWhere,
                 include: {
                     items: { include: { product: true } },
+                    gifts: { include: { gift: true } },
                     splits: { include: { employee: true, branch: true } },
                     payments: true,
                     branch: true,
@@ -605,39 +702,45 @@ export class OrdersService {
             this.prisma.order.count({ where: mainWhere })
         ]);
 
-        // 5. Calculate Counts for Tabs (Correct approach for UI)
-        // Use globalFilters as base for all tab counts to ensure isolation
-        const countBaseFilters = [...(whereClause.AND as any[] || []), ...globalFilters];
-
+        // 5. Calculate Counts for Tabs (Strictly aligned with Dashboard)
         const [all, created, assigned, installment, invoice] = await Promise.all([
+            // Tất cả đơn hàng (Theo bộ lọc hện tại)
             this.prisma.order.count({
-                where: { ...whereClause, AND: countBaseFilters }
+                where: { ...whereClause, AND: globalFilters }
             }),
+
+            // Tab "Tôi tạo"
             this.prisma.order.count({
-                where: { ...whereClause, AND: [...countBaseFilters, { createdBy: userId }] }
+                where: { ...whereClause, createdBy: userId }
             }),
-            this.prisma.order.count({
-                where: { ...whereClause, AND: [...countBaseFilters, { splits: { some: { employee: { userId: userId } } } }, { createdBy: { not: userId } }] }
-            }),
-            this.prisma.order.count({
-                where: { ...whereClause, AND: [...countBaseFilters, { payments: { some: { paymentMethod: 'INSTALLMENT' } } }, { isPaymentConfirmed: false }] }
-            }),
+
+            // Tab "Được chia"
             this.prisma.order.count({
                 where: {
                     ...whereClause,
-                    AND: [
-                        ...countBaseFilters,
-                        { isInvoiceIssued: false },
-                        {
-                            OR: [
-                                { payments: { none: { paymentMethod: 'INSTALLMENT' } } },
-                                {
-                                    payments: { some: { paymentMethod: 'INSTALLMENT' } },
-                                    isPaymentConfirmed: true
-                                }
-                            ]
-                        }
-                    ]
+                    splits: { some: { employee: { userId: userId } } },
+                    createdBy: { not: userId }
+                }
+            }),
+
+            // Tab "Chờ trả góp" (Tất cả đơn tồn đọng đến endDate)
+            this.prisma.order.count({
+                where: {
+                    branchId: branchId && branchId !== 'all' ? branchId : whereClause.branchId,
+                    status: { notIn: ['canceled', 'rejected'] },
+                    payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                    isPaymentConfirmed: false,
+                    orderDate: { lte: endDate ? new Date(endDate) : undefined }
+                }
+            }),
+
+            // Tab "Chờ xuất HĐ" (Tất cả đơn tồn đọng đến endDate)
+            this.prisma.order.count({
+                where: {
+                    branchId: branchId && branchId !== 'all' ? branchId : whereClause.branchId,
+                    status: { notIn: ['canceled', 'rejected'] },
+                    isInvoiceIssued: false,
+                    orderDate: { lte: endDate ? new Date(endDate) : undefined }
                 }
             })
         ]);
@@ -663,8 +766,8 @@ export class OrdersService {
         if (!user) throw new BadRequestException('User not found');
 
         const role = user.role.code;
-        if (role !== 'DIRECTOR' && role !== 'CHIEF_ACCOUNTANT') {
-            throw new BadRequestException('Unauthorized: Only Director or Chief Accountant can delete orders');
+        if (!['DIRECTOR', 'CHIEF_ACCOUNTANT', 'ACCOUNTANT', 'BRANCH_ACCOUNTANT'].includes(role)) {
+            throw new BadRequestException('Unauthorized: Only Director, Chief Accountant or Accountant can delete orders');
         }
 
         const order = await this.prisma.order.findUnique({

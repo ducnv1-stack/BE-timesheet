@@ -6,6 +6,7 @@ import { OrdersModule } from './orders/orders.module';
 import { BranchesModule } from './branches/branches.module';
 import { EmployeesModule } from './employees/employees.module';
 import { ProductsModule } from './products/products.module';
+import { GiftsModule } from './gifts/gifts.module';
 import { AuthModule } from './auth/auth.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { RolesModule } from './roles/roles.module';
@@ -17,6 +18,7 @@ import { RolesModule } from './roles/roles.module';
     BranchesModule,
     EmployeesModule,
     ProductsModule,
+    GiftsModule,
     AuthModule,
     DashboardModule,
     RolesModule,

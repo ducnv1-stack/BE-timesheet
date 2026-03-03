@@ -26,7 +26,6 @@ async function main() {
         { code: 'HAIPHONG', name: 'Hải Phòng' },
         { code: 'THANHHOA', name: 'Thanh Hóa' },
         { code: 'DANANG', name: 'Đà Nẵng' },
-        { code: 'TOTAL', name: 'Hải Phòng' }, // Duplicate name in data, mapped to existing
     ];
 
     console.log('Upserting branches...');

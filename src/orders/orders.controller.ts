@@ -75,11 +75,13 @@ export class OrdersController {
         @Query('paymentMethod') paymentMethod?: string,
         @Query('invoiceStatus') invoiceStatus?: string,
         @Query('timeFilter') timeFilter?: string,
+        @Query('startDate') startDate?: string,
+        @Query('endDate') endDate?: string,
         @Query('tab') tab?: string,
         @Query('employeeId') employeeId?: string,
         @Query('lowPrice') lowPrice?: string,
-        @Query('startDate') startDate?: string,
-        @Query('endDate') endDate?: string
+        @Query('excludeInstallment') excludeInstallment?: string,
+        @Query('deliveryType') deliveryType?: string
     ) {
         return this.ordersService.findAll(
             userId,
@@ -93,11 +95,13 @@ export class OrdersController {
             paymentMethod,
             invoiceStatus,
             timeFilter,
+            startDate,
+            endDate,
             tab,
             employeeId,
             lowPrice,
-            startDate,
-            endDate
+            excludeInstallment,
+            deliveryType
         );
     }
 

@@ -110,6 +110,7 @@ model Order {
   isPaymentConfirmed Boolean  @default(false) @map("is_payment_confirmed")
   confirmedById      String?  @map("confirmed_by_id") @db.Uuid
   confirmedAt        DateTime? @map("confirmed_at")
+  updatedAt          DateTime @default(now()) @updatedAt @map("updated_at")
   createdAt          DateTime @default(now()) @map("created_at")
 
   branch    Branch      @relation(fields: [branchId], references: [id])
@@ -126,6 +127,7 @@ model Order {
   splits    OrderSplit[]
   payments  Payment[]
   deliveries Delivery[]
+  gifts     OrderGift[]
   auditLogs OrderAuditLog[]
 
   @@map("orders")
@@ -186,13 +188,15 @@ model Payment {
 model Delivery {
   id          String   @id @default(uuid()) @db.Uuid
   orderId     String   @map("order_id") @db.Uuid
-  driverId    String   @map("driver_id") @db.Uuid
-  driverType  String   @map("driver_type") // internal | external | sale
+  driverId    String?  @map("driver_id") @db.Uuid
+  driverType  String   @map("driver_type") // internal | external | sale (Legacy - will be replaced by category)
+  role        String?  @default("DRIVER") // DRIVER | STAFF
+  category    String?  // COMPANY_DRIVER, EXTERNAL_DRIVER, STAFF_DELIVERER, SELLING_SALE, OTHER_SALE
   deliveryFee Decimal  @map("delivery_fee") @db.Decimal(20, 2)
   createdAt   DateTime @default(now()) @map("created_at")
 
-  order    Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  driver   Employee @relation(fields: [driverId], references: [id])
+  order    Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  driver   Employee? @relation(fields: [driverId], references: [id])
 
   @@map("deliveries")
 }
@@ -203,12 +207,39 @@ model Product {
   name       String
   minPrice   Decimal  @map("min_price") @db.Decimal(20, 2)
   isHighEnd  Boolean  @default(false) @map("is_high_end")
+  hotBonus   Decimal  @default(0) @map("hot_bonus") @db.Decimal(20, 2)
   createdAt  DateTime @default(now()) @map("created_at")
 
   orderItems OrderItem[]
   bonusRules ProductBonusRule[]
 
   @@map("products")
+}
+
+// 🟩 gifts – Quà tặng kèm
+model Gift {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  price     Decimal  @default(0) @db.Decimal(20, 2)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  orderGifts OrderGift[]
+
+  @@map("gifts")
+}
+
+// 🟩 order_gifts – Quà tặng trong đơn hàng
+model OrderGift {
+  id      String @id @default(uuid()) @db.Uuid
+  orderId String @map("order_id") @db.Uuid
+  giftId  String @map("gift_id") @db.Uuid
+  quantity Int    @default(1)
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  gift  Gift  @relation(fields: [giftId], references: [id])
+
+  @@map("order_gifts")
 }
 
 // 5.2 Bảng product_bonus_rules

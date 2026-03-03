@@ -19,9 +19,8 @@ export class DashboardService {
         switch (user.role.code) {
             case 'DIRECTOR':
             case 'CHIEF_ACCOUNTANT':
-                return this.getAccountingStats(undefined, startDate, endDate);
             case 'ACCOUNTANT':
-                return this.getAccountingStats(user.employee?.branchId, startDate, endDate);
+                return this.getAccountingStats(undefined, startDate, endDate);
             case 'MANAGER':
                 return this.getManagerStats(user.employee?.branchId, startDate, endDate);
             case 'SALE':
@@ -30,6 +29,9 @@ export class DashboardService {
                 return this.getTelesaleStats(user.employee?.id, userId, startDate, endDate);
             case 'MARKETING':
                 return this.getMarketingStats(user.employee?.id, startDate, endDate);
+            case 'DRIVER':
+            case 'COMPANY_DRIVER':
+                return this.getDriverStats(user.employee?.id, startDate, endDate);
             default:
                 return { message: 'Role not supported for dashboard yet' };
         }
@@ -45,47 +47,66 @@ export class DashboardService {
             endDate.setHours(23, 59, 59, 999);
         }
 
-        // Base filter for orders
+        // Base filter for orders (ONLY confirmed orders count towards revenue)
         const orderWhere: any = {
-            OR: [
-                {
-                    payments: { none: { paymentMethod: 'INSTALLMENT' } },
-                    orderDate: { gte: startDate, lte: endDate }
-                },
-                {
-                    payments: { some: { paymentMethod: 'INSTALLMENT' } },
-                    isPaymentConfirmed: true,
-                    confirmedAt: { gte: startDate, lte: endDate }
-                }
-            ]
+            isPaymentConfirmed: true,
+            confirmedAt: { gte: startDate, lte: endDate }
         };
         if (branchId) orderWhere.branchId = branchId;
 
-        const [revResult, ordersCount, unconfirmedRevResult, unconfirmedCount, unissuedInvoiceCount, employeesCount] = await Promise.all([
+        const [revResult, ordersCount, unconfirmedRevResult, unconfirmedCount, pendingInstallmentRevResult, pendingInstallmentCount, unissuedInvoiceCount, employeesCount] = await Promise.all([
             this.prisma.order.aggregate({
-                where: orderWhere,
+                where: { ...orderWhere, status: { notIn: ['canceled', 'rejected'] } },
                 _sum: { totalAmount: true }
             }),
-            this.prisma.order.count({ where: orderWhere }),
+            this.prisma.order.count({
+                where: { ...orderWhere, status: { notIn: ['canceled', 'rejected'] } }
+            }),
             this.prisma.order.aggregate({
                 where: {
                     ...(branchId ? { branchId } : {}),
-                    payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                    status: { notIn: ['canceled', 'rejected'] },
                     isPaymentConfirmed: false,
-                    orderDate: { gte: startDate, lte: endDate }
+                    payments: { none: { paymentMethod: 'INSTALLMENT' } },
+                    orderDate: { lte: endDate }
                 },
                 _sum: { totalAmount: true }
             }),
             this.prisma.order.count({
                 where: {
                     ...(branchId ? { branchId } : {}),
-                    payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                    status: { notIn: ['canceled', 'rejected'] },
                     isPaymentConfirmed: false,
-                    orderDate: { gte: startDate, lte: endDate }
+                    payments: { none: { paymentMethod: 'INSTALLMENT' } },
+                    orderDate: { lte: endDate }
+                }
+            }),
+            this.prisma.order.aggregate({
+                where: {
+                    ...(branchId ? { branchId } : {}),
+                    status: { notIn: ['canceled', 'rejected'] },
+                    isPaymentConfirmed: false,
+                    payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                    orderDate: { lte: endDate }
+                },
+                _sum: { totalAmount: true }
+            }),
+            this.prisma.order.count({
+                where: {
+                    ...(branchId ? { branchId } : {}),
+                    status: { notIn: ['canceled', 'rejected'] },
+                    isPaymentConfirmed: false,
+                    payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                    orderDate: { lte: endDate }
                 }
             }),
             this.prisma.order.count({
-                where: { ...orderWhere, isInvoiceIssued: false }
+                where: {
+                    ...(branchId ? { branchId } : {}),
+                    status: { notIn: ['canceled', 'rejected'] },
+                    isInvoiceIssued: false,
+                    orderDate: { lte: endDate }
+                }
             }),
             this.prisma.employee.count({
                 where: {
@@ -97,6 +118,7 @@ export class DashboardService {
 
         const totalRevenue = Number(revResult._sum.totalAmount || 0);
         const unconfirmedRevenue = Number(unconfirmedRevResult._sum.totalAmount || 0);
+        const pendingInstallmentRevenue = Number(pendingInstallmentRevResult._sum.totalAmount || 0);
 
         // Get eligible order IDs to avoid circular reference in Prisma
         // (filtering payment -> order -> payments creates a circular relation)
@@ -122,22 +144,22 @@ export class DashboardService {
             };
         }));
 
-        // Top Branches / All Branches Table
+        // Filter for branch breakdown (Confirmed in period OR Pending at mốc endDate)
         const branchWhere: any = {
+            status: { notIn: ['canceled', 'rejected'] },
             OR: [
                 {
-                    payments: { none: { paymentMethod: 'INSTALLMENT' } },
-                    orderDate: { gte: startDate, lte: endDate }
-                },
-                {
-                    payments: { some: { paymentMethod: 'INSTALLMENT' } },
                     isPaymentConfirmed: true,
                     confirmedAt: { gte: startDate, lte: endDate }
                 },
                 {
-                    payments: { some: { paymentMethod: 'INSTALLMENT' } },
                     isPaymentConfirmed: false,
-                    orderDate: { gte: startDate, lte: endDate }
+                    orderDate: { lte: endDate }
+                },
+                {
+                    // Catch orders confirmed outside range but still pending invoice
+                    isInvoiceIssued: false,
+                    orderDate: { lte: endDate }
                 }
             ]
         };
@@ -150,6 +172,7 @@ export class DashboardService {
                     select: {
                         totalAmount: true,
                         isPaymentConfirmed: true,
+                        confirmedAt: true,
                         isInvoiceIssued: true,
                         payments: {
                             select: { paymentMethod: true }
@@ -164,18 +187,26 @@ export class DashboardService {
 
         const branchStats = branches.map(b => {
             const revenueOrders = b.orders.filter(o =>
-                (o.payments.every(p => p.paymentMethod !== 'INSTALLMENT')) ||
-                (o.payments.some(p => p.paymentMethod === 'INSTALLMENT') && o.isPaymentConfirmed)
+                o.isPaymentConfirmed &&
+                o.confirmedAt &&
+                o.confirmedAt >= startDate &&
+                o.confirmedAt <= endDate
             );
             const revenue = revenueOrders.reduce((sum, o) => sum + Number(o.totalAmount), 0);
             const lowPriceOrders = revenueOrders.filter(o => o.items.some(i => i.isBelowMin)).length;
 
-            // Pending Installments specifically for "Chờ khớp tiền"
+            // Non-installment unconfirmed (All time up to endDate)
             const unconfirmedOrders = b.orders.filter(o =>
+                o.payments.every(p => p.paymentMethod !== 'INSTALLMENT') && !o.isPaymentConfirmed
+            ).length;
+
+            // Installment pending (All time up to endDate)
+            const pendingInstallmentOrders = b.orders.filter(o =>
                 o.payments.some(p => p.paymentMethod === 'INSTALLMENT') && !o.isPaymentConfirmed
             ).length;
 
-            const pendingInvoices = revenueOrders.filter(o => !o.isInvoiceIssued).length;
+            // Pending invoices (All time up to endDate)
+            const pendingInvoices = b.orders.filter(o => !o.isInvoiceIssued).length;
 
             return {
                 id: b.id,
@@ -184,6 +215,7 @@ export class DashboardService {
                 orderCount: revenueOrders.length,
                 lowPriceRatio: revenueOrders.length > 0 ? Math.round((lowPriceOrders / revenueOrders.length) * 100) : 0,
                 unconfirmedOrders,
+                pendingInstallmentOrders,
                 pendingInvoices
             };
         });
@@ -195,9 +227,11 @@ export class DashboardService {
             role: 'DIRECTOR', // Keep for FE component matching
             isGlobal: !branchId,
             totalRevenue,
-            unconfirmedRevenue,
             totalOrders: ordersCount,
             unconfirmedCount,
+            unconfirmedRevenue,
+            pendingInstallmentCount,
+            pendingInstallmentRevenue,
             unissuedInvoiceCount,
             activeEmployees: employeesCount,
             paymentMethodBreakdown,
@@ -236,17 +270,8 @@ export class DashboardService {
             where: {
                 employee: { branchId },
                 order: {
-                    OR: [
-                        {
-                            payments: { none: { paymentMethod: 'INSTALLMENT' } },
-                            orderDate: { gte: startDate, lte: endDate }
-                        },
-                        {
-                            payments: { some: { paymentMethod: 'INSTALLMENT' } },
-                            isPaymentConfirmed: true,
-                            confirmedAt: { gte: startDate, lte: endDate }
-                        }
-                    ]
+                    isPaymentConfirmed: true,
+                    confirmedAt: { gte: startDate, lte: endDate }
                 }
             },
             include: {
@@ -289,6 +314,85 @@ export class DashboardService {
         const achievedRule = salaryRules.find(rule => branchRevenue >= Number(rule.targetRevenue));
         const nextRule = [...salaryRules].reverse().find(rule => branchRevenue < Number(rule.targetRevenue));
 
+        // ========= 4. Lấy thống kê vận hành chi nhánh (Operational Stats) =========
+        // Quy tắc: Các chỉ số "Chờ xử lý" (Pending) sẽ đếm TẤT CẢ các đơn tồn đọng đến thời điểm endDate
+        // (Không giới hạn bởi startDate để tránh bỏ sót các đơn cũ chưa xử lý xong)
+
+        // 4.1. Tổng đơn hàng phát sinh trong kỳ (bao gồm đơn thường và đơn trả góp đã confirm)
+        const orderWhere: any = {
+            branchId,
+            isPaymentConfirmed: true,
+            confirmedAt: { gte: startDate, lte: endDate }
+        };
+
+        const [totalOrders, unconfirmedCount, pendingInstallmentCount, unissuedInvoiceCount, activeEmployees, eligibleOrders] = await Promise.all([
+            // Tổng đơn trong kỳ
+            this.prisma.order.count({
+                where: {
+                    ...orderWhere,
+                    status: { notIn: ['canceled', 'rejected'] }
+                }
+            }),
+
+            // Chờ khớp tiền (Đơn thường/CK chưa xác nhận - đến mốc endDate)
+            this.prisma.order.count({
+                where: {
+                    branchId,
+                    status: { notIn: ['canceled', 'rejected'] },
+                    payments: { none: { paymentMethod: 'INSTALLMENT' } },
+                    isPaymentConfirmed: false,
+                    orderDate: { lte: endDate }
+                }
+            }),
+
+            // Chờ duyệt trả góp (Đơn trả góp chưa xác nhận - đến mốc endDate)
+            this.prisma.order.count({
+                where: {
+                    branchId,
+                    status: { notIn: ['canceled', 'rejected'] },
+                    payments: { some: { paymentMethod: 'INSTALLMENT' } },
+                    isPaymentConfirmed: false,
+                    orderDate: { lte: endDate }
+                }
+            }),
+
+            // Chờ xuất hóa đơn (Tất cả đơn chưa xuất hóa đơn - theo yêu cầu: không phân biệt gấp/không gấp)
+            this.prisma.order.count({
+                where: {
+                    branchId,
+                    status: { notIn: ['canceled', 'rejected'] },
+                    isInvoiceIssued: false,
+                    orderDate: { lte: endDate }
+                }
+            }),
+
+            // Nhân sự đang làm việc
+            this.prisma.employee.count({
+                where: { branchId, status: 'Đang làm việc' }
+            }),
+
+            // Đơn hàng hợp lệ để tính cơ cấu thanh toán
+            this.prisma.order.findMany({
+                where: orderWhere,
+                select: { id: true }
+            })
+        ]);
+
+        const eligibleOrderIds = eligibleOrders.map(o => o.id);
+        const paymentMethods = ['CASH', 'TRANSFER_COMPANY', 'TRANSFER_PERSONAL', 'CARD', 'INSTALLMENT'];
+        const paymentBreakdownRaw = await Promise.all(paymentMethods.map(async method => {
+            const sum = await this.prisma.payment.aggregate({
+                where: { paymentMethod: method, orderId: { in: eligibleOrderIds } },
+                _sum: { amount: true }
+            });
+            return { method, amount: Number(sum._sum.amount || 0) };
+        }));
+
+        const cashAmount = paymentBreakdownRaw.find(p => p.method === 'CASH')?.amount || 0;
+        const transferAmount = paymentBreakdownRaw
+            .filter(p => ['TRANSFER_COMPANY', 'TRANSFER_PERSONAL', 'CARD'].includes(p.method))
+            .reduce((s, p) => s + p.amount, 0);
+
         // Các mốc để hiển thị KPI progress bar
         const allMilestones = [...salaryRules].reverse().map(rule => ({
             percent: rule.targetPercent,
@@ -299,60 +403,20 @@ export class DashboardService {
             isAchieved: branchRevenue >= Number(rule.targetRevenue)
         }));
 
-        // Nếu chưa đạt mốc nào → lương/thưởng = 0, vẫn trả đủ dữ liệu
+        // ========= 5. Phản hồi kết quả khi chưa đạt mốc doanh số tối thiểu =========
         if (!achievedRule) {
-            // Vẫn cần tính operational stats trước khi return
-            const earlyOrderWhere: any = {
-                branchId,
-                OR: [
-                    {
-                        payments: { none: { paymentMethod: 'INSTALLMENT' } },
-                        orderDate: { gte: startDate, lte: endDate }
-                    },
-                    {
-                        payments: { some: { paymentMethod: 'INSTALLMENT' } },
-                        isPaymentConfirmed: true,
-                        confirmedAt: { gte: startDate, lte: endDate }
-                    }
-                ]
-            };
-            const [earlyTotalOrders, earlyUnconfirmed, earlyUnissued, earlyActiveEmp, earlyEligibleOrders] = await Promise.all([
-                this.prisma.order.count({ where: earlyOrderWhere }),
-                this.prisma.order.count({
-                    where: {
-                        branchId,
-                        payments: { some: { paymentMethod: 'INSTALLMENT' } },
-                        isPaymentConfirmed: false,
-                        orderDate: { gte: startDate, lte: endDate }
-                    }
-                }),
-                this.prisma.order.count({ where: { ...earlyOrderWhere, isInvoiceIssued: false } }),
-                this.prisma.employee.count({ where: { branchId, status: 'Đang làm việc' } }),
-                this.prisma.order.findMany({ where: earlyOrderWhere, select: { id: true } })
-            ]);
-            const earlyEligibleIds = earlyEligibleOrders.map(o => o.id);
-            const earlyMethods = ['CASH', 'TRANSFER_COMPANY', 'TRANSFER_PERSONAL', 'CARD', 'INSTALLMENT'];
-            const earlyBreakdown = await Promise.all(earlyMethods.map(async method => {
-                const sum = await this.prisma.payment.aggregate({
-                    where: { paymentMethod: method, orderId: { in: earlyEligibleIds } },
-                    _sum: { amount: true }
-                });
-                return { method, amount: Number(sum._sum.amount || 0) };
-            }));
-            const earlyCash = earlyBreakdown.find(p => p.method === 'CASH')?.amount || 0;
-            const earlyTransfer = earlyBreakdown.filter(p => ['TRANSFER_COMPANY', 'TRANSFER_PERSONAL', 'CARD'].includes(p.method)).reduce((s, p) => s + p.amount, 0);
-
             return {
                 role: 'MANAGER',
                 branchRevenue,
                 monthlyRevenue: branchRevenue,
-                totalOrders: earlyTotalOrders,
-                cashAmount: earlyCash,
-                transferAmount: earlyTransfer,
-                unconfirmedCount: earlyUnconfirmed,
-                unissuedInvoiceCount: earlyUnissued,
-                activeEmployees: earlyActiveEmp,
-                paymentMethodBreakdown: earlyBreakdown,
+                totalOrders,
+                cashAmount,
+                transferAmount,
+                unconfirmedCount,
+                pendingInstallmentCount,
+                unissuedInvoiceCount,
+                activeEmployees,
+                paymentMethodBreakdown: paymentBreakdownRaw,
                 baseSalary: 0,
                 baseBonus: 0,
                 actualBonus: 0,
@@ -381,12 +445,10 @@ export class DashboardService {
         const baseBonus = Number(achievedRule.bonusAmount);
         const commissionRate = Number(achievedRule.commissionPercent);
 
-        // ========= 4. Tính hoa hồng =========
+        // ========= 6. Tính hoa hồng, thưởng nóng, tiền ship =========
         const commission = (branchRevenue * commissionRate) / 100;
 
-        // ========= 5. Tính thưởng nóng (30% từ nhân viên) =========
         let totalBranchHotBonus = 0;
-
         for (const split of branchOrders) {
             for (const item of split.order.items) {
                 if (item.product.isHighEnd && item.saleBonusAmount) {
@@ -395,10 +457,8 @@ export class DashboardService {
                 }
             }
         }
-
         const managerHotBonus = totalBranchHotBonus * 0.3;
 
-        // ========= 6. Tính tiền ship (từ deliveries) =========
         const shippingFees = branchOrders.reduce((sum, split) => {
             const splitRatio = Number(split.splitPercent) / 100;
             const deliveryFees = split.order.deliveries.reduce((dSum, delivery) =>
@@ -418,59 +478,6 @@ export class DashboardService {
         // ========= 8. Tính thực nhận =========
         const netIncome = baseSalary + actualBonus + commission + managerHotBonus + shippingFees;
 
-        // ========= 9. Lấy thống kê vận hành chi nhánh =========
-        const orderWhere: any = {
-            branchId,
-            OR: [
-                {
-                    payments: { none: { paymentMethod: 'INSTALLMENT' } },
-                    orderDate: { gte: startDate, lte: endDate }
-                },
-                {
-                    payments: { some: { paymentMethod: 'INSTALLMENT' } },
-                    isPaymentConfirmed: true,
-                    confirmedAt: { gte: startDate, lte: endDate }
-                }
-            ]
-        };
-
-        const [totalOrders, unconfirmedCount, unissuedInvoiceCount, activeEmployees, eligibleOrders] = await Promise.all([
-            this.prisma.order.count({ where: orderWhere }),
-            this.prisma.order.count({
-                where: {
-                    branchId,
-                    payments: { some: { paymentMethod: 'INSTALLMENT' } },
-                    isPaymentConfirmed: false,
-                    orderDate: { gte: startDate, lte: endDate }
-                }
-            }),
-            this.prisma.order.count({
-                where: { ...orderWhere, isInvoiceIssued: false }
-            }),
-            this.prisma.employee.count({
-                where: { branchId, status: 'Đang làm việc' }
-            }),
-            this.prisma.order.findMany({
-                where: orderWhere,
-                select: { id: true }
-            })
-        ]);
-
-        const eligibleOrderIds = eligibleOrders.map(o => o.id);
-        const paymentMethods = ['CASH', 'TRANSFER_COMPANY', 'TRANSFER_PERSONAL', 'CARD', 'INSTALLMENT'];
-        const paymentBreakdownRaw = await Promise.all(paymentMethods.map(async method => {
-            const sum = await this.prisma.payment.aggregate({
-                where: { paymentMethod: method, orderId: { in: eligibleOrderIds } },
-                _sum: { amount: true }
-            });
-            return { method, amount: Number(sum._sum.amount || 0) };
-        }));
-
-        const cashAmount = paymentBreakdownRaw.find(p => p.method === 'CASH')?.amount || 0;
-        const transferAmount = paymentBreakdownRaw
-            .filter(p => ['TRANSFER_COMPANY', 'TRANSFER_PERSONAL', 'CARD'].includes(p.method))
-            .reduce((s, p) => s + p.amount, 0);
-
         return {
             role: 'MANAGER',
             branchRevenue,
@@ -479,6 +486,7 @@ export class DashboardService {
             cashAmount,
             transferAmount,
             unconfirmedCount,
+            pendingInstallmentCount,
             unissuedInvoiceCount,
             activeEmployees,
             paymentMethodBreakdown: paymentBreakdownRaw,
@@ -526,17 +534,8 @@ export class DashboardService {
             where: {
                 employeeId,
                 order: {
-                    OR: [
-                        {
-                            payments: { none: { paymentMethod: 'INSTALLMENT' } },
-                            orderDate: { gte: startDate, lte: endDate }
-                        },
-                        {
-                            payments: { some: { paymentMethod: 'INSTALLMENT' } },
-                            isPaymentConfirmed: true,
-                            confirmedAt: { gte: startDate, lte: endDate }
-                        }
-                    ]
+                    isPaymentConfirmed: true,
+                    confirmedAt: { gte: startDate, lte: endDate }
                 }
             },
             include: {
@@ -596,17 +595,8 @@ export class DashboardService {
             where: {
                 driverId: employeeId,
                 order: {
-                    OR: [
-                        {
-                            payments: { none: { paymentMethod: 'INSTALLMENT' } },
-                            orderDate: { gte: startDate, lte: endDate }
-                        },
-                        {
-                            payments: { some: { paymentMethod: 'INSTALLMENT' } },
-                            isPaymentConfirmed: true,
-                            confirmedAt: { gte: startDate, lte: endDate }
-                        }
-                    ]
+                    isPaymentConfirmed: true,
+                    confirmedAt: { gte: startDate, lte: endDate }
                 }
             }
         });
@@ -634,10 +624,7 @@ export class DashboardService {
             where: {
                 employeeId,
                 order: {
-                    OR: [
-                        { payments: { none: { paymentMethod: 'INSTALLMENT' } } },
-                        { payments: { some: { paymentMethod: 'INSTALLMENT' } }, isPaymentConfirmed: true }
-                    ]
+                    isPaymentConfirmed: true
                 }
             },
             _sum: { splitAmount: true }
@@ -683,17 +670,8 @@ export class DashboardService {
         const orders = await this.prisma.order.findMany({
             where: {
                 orderSource: { equals: 'FACEBOOK', mode: 'insensitive' },
-                OR: [
-                    {
-                        payments: { none: { paymentMethod: 'INSTALLMENT' } },
-                        orderDate: { gte: startDate, lte: endDate }
-                    },
-                    {
-                        payments: { some: { paymentMethod: 'INSTALLMENT' } },
-                        isPaymentConfirmed: true,
-                        confirmedAt: { gte: startDate, lte: endDate }
-                    }
-                ]
+                isPaymentConfirmed: true,
+                confirmedAt: { gte: startDate, lte: endDate }
             }
         });
 
@@ -744,17 +722,8 @@ export class DashboardService {
             include: {
                 orders: {
                     where: {
-                        OR: [
-                            {
-                                payments: { none: { paymentMethod: 'INSTALLMENT' } },
-                                orderDate: { gte: startDate, lte: endDate }
-                            },
-                            {
-                                payments: { some: { paymentMethod: 'INSTALLMENT' } },
-                                isPaymentConfirmed: true,
-                                confirmedAt: { gte: startDate, lte: endDate }
-                            }
-                        ]
+                        isPaymentConfirmed: true,
+                        confirmedAt: { gte: startDate, lte: endDate }
                     },
                     select: { totalAmount: true }
                 }
@@ -800,23 +769,15 @@ export class DashboardService {
             endDate.setHours(23, 59, 59, 999);
         }
 
-        // Logic lọc đơn hàng giống getAccountingStats
+        // Logic lọc đơn hàng đồng bộ hoàn toàn với getAccountingStats -> branchWhere & revenueOrders filter
         const orderWhere: any = {
             branchId,
+            status: { notIn: ['canceled', 'rejected'] },
             items: {
                 some: { isBelowMin: true }
             },
-            OR: [
-                {
-                    payments: { none: { paymentMethod: 'INSTALLMENT' } },
-                    orderDate: { gte: startDate, lte: endDate }
-                },
-                {
-                    payments: { some: { paymentMethod: 'INSTALLMENT' } },
-                    isPaymentConfirmed: true,
-                    confirmedAt: { gte: startDate, lte: endDate }
-                }
-            ]
+            isPaymentConfirmed: true,
+            confirmedAt: { gte: startDate, lte: endDate }
         };
 
         const orders = await this.prisma.order.findMany({
@@ -826,14 +787,19 @@ export class DashboardService {
                     where: { isBelowMin: true },
                     include: { product: true }
                 },
+                payments: true, // Needed if we want to double check or display
                 splits: {
                     include: { employee: true },
                     take: 1
                 }
             },
             orderBy: { createdAt: 'desc' },
-            take: 20
+            take: 50
         });
+
+        // Cẩn thận: getAccountingStats dùng filter thủ công trên mảng. 
+        // Logic Prisma OR ở trên đã cover khá sát.
+        // Ta map lại kết quả.
 
         return orders.map(o => ({
             id: o.id,
@@ -848,5 +814,65 @@ export class DashboardService {
                 quantity: i.quantity
             }))
         }));
+    }
+
+    private async getDriverStats(employeeId?: string, startStr?: string, endStr?: string) {
+        if (!employeeId) return { error: 'No employee record found' };
+
+        const now = new Date();
+        const startDate = startStr ? new Date(startStr) : new Date(now.getFullYear(), now.getMonth(), 1);
+        const endDate = endStr ? new Date(endStr) : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+        if (endStr && !endStr.includes('T')) {
+            endDate.setHours(23, 59, 59, 999);
+        }
+
+        // 1. Fetch deliveries for this driver in the specified period
+        const [deliveries, allTimeStats] = await Promise.all([
+            this.prisma.delivery.findMany({
+                where: {
+                    driverId: employeeId,
+                    createdAt: { gte: startDate, lte: endDate }
+                },
+                include: {
+                    order: {
+                        select: {
+                            status: true,
+                            totalAmount: true
+                        }
+                    }
+                }
+            }),
+            this.prisma.delivery.aggregate({
+                where: { driverId: employeeId },
+                _count: { id: true },
+                _sum: { deliveryFee: true }
+            })
+        ]);
+
+        const monthlyDeliveredCount = deliveries.filter(d => d.order.status === 'delivered').length;
+        const monthlyPendingCount = deliveries.filter(d => d.order.status === 'assigned' || d.order.status === 'pending').length;
+        const monthlyShippingFees = deliveries.reduce((sum, d) => sum + Number(d.deliveryFee || 0), 0);
+
+        return {
+            role: 'DRIVER',
+            monthlyStats: {
+                totalTrips: deliveries.length,
+                deliveredCount: monthlyDeliveredCount,
+                pendingCount: monthlyPendingCount,
+                shippingFees: monthlyShippingFees,
+            },
+            allTimeStats: {
+                totalTrips: allTimeStats._count.id,
+                totalShippingFees: Number(allTimeStats._sum.deliveryFee || 0)
+            },
+            recentDeliveries: deliveries.slice(0, 5).map(d => ({
+                id: d.id,
+                orderId: d.orderId,
+                status: d.order.status,
+                fee: Number(d.deliveryFee),
+                date: d.createdAt
+            }))
+        };
     }
 }

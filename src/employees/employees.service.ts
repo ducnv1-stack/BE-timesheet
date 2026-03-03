@@ -25,10 +25,10 @@ export class EmployeesService {
 
         // Role-based visibility logic
         if (roleCode && userId) {
-            if (['DIRECTOR', 'CHIEF_ACCOUNTANT'].includes(roleCode)) {
+            if (['DIRECTOR', 'CHIEF_ACCOUNTANT', 'ACCOUNTANT'].includes(roleCode)) {
                 // Global: No forced filters, use query filters if provided
                 if (query.branchId) where.branchId = query.branchId;
-            } else if (['MANAGER', 'ACCOUNTANT'].includes(roleCode)) {
+            } else if (['MANAGER'].includes(roleCode)) {
                 // Branch: Find the user's branch first
                 const userEmployee = await this.prisma.employee.findFirst({
                     where: { userId },
@@ -321,17 +321,8 @@ export class EmployeesService {
             where: {
                 employeeId: id,
                 order: {
-                    OR: [
-                        {
-                            payments: { none: { paymentMethod: 'INSTALLMENT' } },
-                            orderDate: { gte: startDate, lte: endDate }
-                        },
-                        {
-                            payments: { some: { paymentMethod: 'INSTALLMENT' } },
-                            isPaymentConfirmed: true,
-                            confirmedAt: { gte: startDate, lte: endDate }
-                        }
-                    ]
+                    isPaymentConfirmed: true,
+                    confirmedAt: { gte: startDate, lte: endDate }
                 }
             },
             include: {
@@ -347,7 +338,10 @@ export class EmployeesService {
         const deliveries = await this.prisma.delivery.findMany({
             where: {
                 driverId: id,
-                createdAt: { gte: startDate, lte: endDate }
+                order: {
+                    isPaymentConfirmed: true,
+                    confirmedAt: { gte: startDate, lte: endDate }
+                }
             }
         });
 
@@ -376,20 +370,6 @@ export class EmployeesService {
                 let orderHotBonus = 0;
 
                 for (const item of order.items) {
-                    const itemTotal = Number(item.totalPrice);
-
-                    // Commission Logic (Matched with DashboardService)
-                    // Rate: 1% if below min, 1.8% otherwise
-                    const rate = item.isBelowMin ? 0.01 : 0.018;
-                    // Will apply shareRatio later, so just accumulate raw first? 
-                    // No, let's accumulate per order then share.
-
-                    // Actually, loop structure here iterates items.
-                    // Let's accumulate to order-level totals.
-
-                    // NOTE: Dashboard calculates totalCommission by adding (itemTotal * rate * shareRatio) directly.
-                    // Here we are inside item loop. Let's do the same logic but carefully.
-
                     // Check Low Price
                     if (Number(item.unitPrice) < Number(item.product.minPrice)) {
                         orderLowPriceValue += Number(item.unitPrice) * item.quantity;
@@ -405,24 +385,62 @@ export class EmployeesService {
                 const shareRatio = splitAmount / orderTotal;
                 lowPriceValue += orderLowPriceValue * shareRatio;
                 hotBonus += orderHotBonus * shareRatio;
+            }
+        }
 
-                // Commission calculation (Iterate items again or calculate above? Better above but need to careful about scope)
-                // Let's re-iterate or do it inside the loop above.
-                // To avoid variable complexity, let's iterate items again for clear "Commission" block or just merge.
-                // Merging into above loop:
+        // Determine calculation mode based on role/position
+        const isManager = employee.position.toLowerCase() === 'manager';
+        let baseSalary = 0;
+        let baseReward = 0;
+        commission = 0; // Reset to recalculate based on role
 
-                for (const item of order.items) {
-                    const itemTotal = Number(item.totalPrice);
-                    const rate = item.isBelowMin ? 0.01 : 0.018;
-                    commission += itemTotal * rate * shareRatio;
+        if (isManager) {
+            // Manager logic: Use branch-specific rules
+            const managerRules = await this.prisma.branchManagerSalaryRule.findMany({
+                where: { branchId: employee.branchId },
+                orderBy: { targetRevenue: 'desc' }
+            });
+
+            const achievedRule = managerRules.find(rule => totalRevenue >= Number(rule.targetRevenue));
+
+            if (achievedRule) {
+                baseSalary = Number(achievedRule.baseSalary);
+                baseReward = Number(achievedRule.bonusAmount);
+                // commissionPercent in rules is like 1.5 meaning 1.5%, so divide by 100
+                commission = totalRevenue * (Number(achievedRule.commissionPercent) / 100);
+            } else {
+                // Fallback if no rules found or revenue is below lowest threshold
+                baseSalary = 6000000;
+            }
+        } else {
+            // Sale/NVBH logic: Existing logic
+            const achievedRule = salaryRules.find(rule => totalRevenue >= Number(rule.targetRevenue));
+            baseReward = achievedRule ? Number(achievedRule.bonusAmount) : 0;
+
+            if (employee.position === 'NVBH') {
+                baseSalary = 8000000;
+            } else if (achievedRule) {
+                baseSalary = Number(achievedRule.baseSalary);
+            }
+
+            // Commission calculation for Sale (Existing complex logic)
+            for (const split of splits) {
+                const splitAmount = Number(split.splitAmount);
+                const order = split.order;
+                const orderTotal = Number(order.totalAmount);
+
+                if (orderTotal > 0) {
+                    const shareRatio = splitAmount / orderTotal;
+                    for (const item of order.items) {
+                        const itemTotal = Number(item.totalPrice);
+                        const rate = item.isBelowMin ? 0.01 : 0.018;
+                        commission += itemTotal * rate * shareRatio;
+                    }
                 }
             }
         }
 
-        // Apply Logic
-        const achievedRule = salaryRules.find(rule => totalRevenue >= Number(rule.targetRevenue));
-        let baseReward = achievedRule ? Number(achievedRule.bonusAmount) : 0; // Thưởng mốc
-
+        // Performance Penalty/Clemency Logic (Mainly for Sales, but let's see if it applies to Manager)
         let actualReward = baseReward;
         const ratio = totalRevenue > 0 ? (lowPriceValue / totalRevenue) : 0;
         const isPenalty = ratio >= 0.2;
@@ -430,25 +448,10 @@ export class EmployeesService {
 
         if (isPenalty) {
             actualReward = baseReward * 0.7;
-            if (achievedRule && totalRevenue >= Number(achievedRule.targetRevenue) * 1.1) {
+            const saleRule = isManager ? null : salaryRules.find(rule => totalRevenue >= Number(rule.targetRevenue));
+            if (!isManager && saleRule && totalRevenue >= Number(saleRule.targetRevenue) * 1.1) {
                 actualReward = baseReward;
                 isClemency = true;
-            }
-        }
-
-        // Base Salary Logic
-        let baseSalary = 0;
-        if (employee.position === 'NVBH') {
-            baseSalary = 8000000;
-        } else {
-            // For others, maybe from basic salary rules? Placeholder for now as user verification focused on Sale.
-            // If we had a generic logic, we'd use salaryRules.baseSalary but user said FIXED 8M for Sale.
-            // Let's assume 0 or keep generic for non-sale?
-            // Actually salaryRules has baseSalary field.
-            if (salaryRules.length > 0) {
-                // Determine base salary from rule if not NVBH? Or just leave 0.
-                // Let's use the rule's base salary for the achieved tier if applicable?
-                // User said "Fixed 8M for Sale".
             }
         }
 
@@ -459,7 +462,10 @@ export class EmployeesService {
             totalRevenue,
             lowPriceValue,
             lowPriceRatio: ratio * 100,
-            milestone: achievedRule ? Number(achievedRule.targetRevenue) : 0,
+            milestone: isManager ? (await this.prisma.branchManagerSalaryRule.findFirst({
+                where: { branchId: employee.branchId, targetRevenue: { lte: totalRevenue } },
+                orderBy: { targetRevenue: 'desc' }
+            }))?.targetRevenue ?? 0 : (salaryRules.find(rule => totalRevenue >= Number(rule.targetRevenue))?.targetRevenue ?? 0),
             baseReward,
             actualReward,
             hotBonus,
