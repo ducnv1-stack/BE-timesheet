@@ -111,7 +111,7 @@ export class CreateOrderDto {
     orderDate: string; // ISO Date
 
     @IsString()
-    @IsNotEmpty()
+    @IsOptional()
     orderSource: string;
 
     @IsArray()
@@ -146,4 +146,18 @@ export class CreateOrderDto {
     @ValidateNested({ each: true })
     @Type(() => CreateOrderGiftDto)
     gifts?: CreateOrderGiftDto[];
+
+    @IsOptional()
+    @IsUUID()
+    provinceId?: string;
+
+    @IsOptional()
+    @IsUUID()
+    wardId?: string;
+
+    @IsOptional()
+    province?: any;
+
+    @IsOptional()
+    ward?: any;
 }

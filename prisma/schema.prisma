@@ -113,9 +113,15 @@ model Order {
   updatedAt          DateTime @default(now()) @updatedAt @map("updated_at")
   createdAt          DateTime @default(now()) @map("created_at")
 
+  // Added address fields
+  provinceId         String?  @map("province_id") @db.Uuid
+  wardId             String?  @map("ward_id") @db.Uuid
+
   branch    Branch      @relation(fields: [branchId], references: [id])
   creator   User        @relation(fields: [createdBy], references: [id])
   confirmer User?       @relation("OrderConfirmer", fields: [confirmedById], references: [id])
+  province  Province?   @relation(fields: [provinceId], references: [id])
+  ward      Ward?       @relation(fields: [wardId], references: [id])
 
   // VAT Invoice management
   isInvoiceIssued    Boolean   @default(false) @map("is_invoice_issued")
@@ -324,4 +330,28 @@ model OrderAuditLog {
   order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
   @@map("order_audit_logs")
+}
+
+// 🏘️ provinces – Tỉnh/Thành phố
+model Province {
+  id    String @id @default(uuid()) @db.Uuid
+  apiId String @unique @map("api_id")
+  name  String
+  wards Ward[]
+
+  orders Order[]
+
+  @@map("provinces")
+}
+
+// 🏘️ wards – Xã/Phường
+model Ward {
+  id         String @id @default(uuid()) @db.Uuid
+  provinceId String @map("province_id") @db.Uuid
+  name       String
+
+  province Province @relation(fields: [provinceId], references: [id], onDelete: Cascade)
+  orders   Order[]
+
+  @@map("wards")
 }

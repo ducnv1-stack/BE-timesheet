@@ -10,6 +10,7 @@ import { GiftsModule } from './gifts/gifts.module';
 import { AuthModule } from './auth/auth.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { RolesModule } from './roles/roles.module';
+import { AddressesModule } from './addresses/addresses.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { RolesModule } from './roles/roles.module';
     AuthModule,
     DashboardModule,
     RolesModule,
+    AddressesModule,
   ],
   controllers: [AppController],
   providers: [AppService],

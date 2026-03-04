@@ -54,7 +54,7 @@ export class DashboardService {
         };
         if (branchId) orderWhere.branchId = branchId;
 
-        const [revResult, ordersCount, unconfirmedRevResult, unconfirmedCount, pendingInstallmentRevResult, pendingInstallmentCount, unissuedInvoiceCount, employeesCount] = await Promise.all([
+        const [revResult, ordersCount, unconfirmedRevResult, unconfirmedCount, pendingInstallmentRevResult, pendingInstallmentCount, unissuedInvoiceCount, employeesCount, salesRevResult, salesOrderCount] = await Promise.all([
             this.prisma.order.aggregate({
                 where: { ...orderWhere, status: { notIn: ['canceled', 'rejected'] } },
                 _sum: { totalAmount: true }
@@ -113,10 +113,27 @@ export class DashboardService {
                     status: 'Đang làm việc',
                     ...(branchId ? { branchId } : {})
                 }
+            }),
+            // DOANH SỐ BÁN — Tất cả đơn theo orderDate (không cần confirm)
+            this.prisma.order.aggregate({
+                where: {
+                    ...(branchId ? { branchId } : {}),
+                    status: { notIn: ['canceled', 'rejected'] },
+                    orderDate: { gte: startDate, lte: endDate }
+                },
+                _sum: { totalAmount: true }
+            }),
+            this.prisma.order.count({
+                where: {
+                    ...(branchId ? { branchId } : {}),
+                    status: { notIn: ['canceled', 'rejected'] },
+                    orderDate: { gte: startDate, lte: endDate }
+                }
             })
         ]);
 
         const totalRevenue = Number(revResult._sum.totalAmount || 0);
+        const salesRevenue = Number(salesRevResult._sum.totalAmount || 0);
         const unconfirmedRevenue = Number(unconfirmedRevResult._sum.totalAmount || 0);
         const pendingInstallmentRevenue = Number(pendingInstallmentRevResult._sum.totalAmount || 0);
 
@@ -160,6 +177,10 @@ export class DashboardService {
                     // Catch orders confirmed outside range but still pending invoice
                     isInvoiceIssued: false,
                     orderDate: { lte: endDate }
+                },
+                {
+                    // All orders in period for salesRevenue calculation
+                    orderDate: { gte: startDate, lte: endDate }
                 }
             ]
         };
@@ -171,6 +192,7 @@ export class DashboardService {
                     where: branchWhere,
                     select: {
                         totalAmount: true,
+                        orderDate: true,
                         isPaymentConfirmed: true,
                         confirmedAt: true,
                         isInvoiceIssued: true,
@@ -186,6 +208,13 @@ export class DashboardService {
         });
 
         const branchStats = branches.map(b => {
+            // Doanh số bán (tất cả đơn trong kỳ theo orderDate)
+            const allOrdersInPeriod = b.orders.filter(o =>
+                (o as any).orderDate >= startDate && (o as any).orderDate <= endDate
+            );
+            const branchSalesRevenue = allOrdersInPeriod.reduce((sum, o) => sum + Number(o.totalAmount), 0);
+
+            // Doanh số hoàn thành (chỉ đơn đã confirm)
             const revenueOrders = b.orders.filter(o =>
                 o.isPaymentConfirmed &&
                 o.confirmedAt &&
@@ -211,8 +240,11 @@ export class DashboardService {
             return {
                 id: b.id,
                 name: b.name,
-                revenue,
+                salesRevenue: branchSalesRevenue, // Doanh số bán
+                revenue,                           // Doanh số hoàn thành
+                pendingRevenue: Math.max(0, branchSalesRevenue - revenue), // Chờ thanh toán
                 orderCount: revenueOrders.length,
+                salesOrderCount: allOrdersInPeriod.length,
                 lowPriceRatio: revenueOrders.length > 0 ? Math.round((lowPriceOrders / revenueOrders.length) * 100) : 0,
                 unconfirmedOrders,
                 pendingInstallmentOrders,
@@ -226,7 +258,11 @@ export class DashboardService {
         return {
             role: 'DIRECTOR', // Keep for FE component matching
             isGlobal: !branchId,
-            totalRevenue,
+            salesRevenue,           // Doanh số bán toàn hệ thống
+            salesOrderCount,        // Tổng số đơn bán
+            totalRevenue,           // Doanh số hoàn thành (backward compatible)
+            completedRevenue: totalRevenue,
+            pendingRevenueTotal: Math.max(0, salesRevenue - totalRevenue),
             totalOrders: ordersCount,
             unconfirmedCount,
             unconfirmedRevenue,
@@ -265,7 +301,21 @@ export class DashboardService {
             endDate.setHours(23, 59, 59, 999);
         }
 
-        // ========= 1. Tính tổng doanh số chi nhánh =========
+        // ========= 1a. DOANH SỐ BÁN chi nhánh — Tất cả đơn theo ngày tạo đơn (orderDate) =========
+        const branchSalesSplits = await this.prisma.orderSplit.findMany({
+            where: {
+                employee: { branchId },
+                order: {
+                    status: { notIn: ['canceled', 'rejected'] },
+                    orderDate: { gte: startDate, lte: endDate }
+                }
+            },
+            select: { splitAmount: true }
+        });
+        const branchSalesRevenue = branchSalesSplits.reduce((sum, s) => sum + Number(s.splitAmount), 0);
+        const branchSalesOrderCount = branchSalesSplits.length;
+
+        // ========= 1b. DOANH SỐ HOÀN THÀNH chi nhánh — Đơn đã xác nhận (confirmedAt) =========
         const branchOrders = await this.prisma.orderSplit.findMany({
             where: {
                 employee: { branchId },
@@ -289,6 +339,7 @@ export class DashboardService {
         });
 
         const branchRevenue = branchOrders.reduce((sum, split) => sum + Number(split.splitAmount), 0);
+        const branchPendingRevenue = Math.max(0, branchSalesRevenue - branchRevenue);
 
         // ========= 2. Tính chỉ số giá dưới Min (branch-level) =========
         let lowPriceOrderCount = 0;
@@ -407,7 +458,10 @@ export class DashboardService {
         if (!achievedRule) {
             return {
                 role: 'MANAGER',
-                branchRevenue,
+                branchSalesRevenue,     // Doanh số bán chi nhánh
+                branchRevenue,          // Doanh số hoàn thành chi nhánh
+                branchPendingRevenue,   // Doanh số chờ thanh toán
+                branchSalesOrderCount,  // Tổng số đơn bán
                 monthlyRevenue: branchRevenue,
                 totalOrders,
                 cashAmount,
@@ -448,19 +502,18 @@ export class DashboardService {
         // ========= 6. Tính hoa hồng, thưởng nóng, tiền ship =========
         const commission = (branchRevenue * commissionRate) / 100;
 
-        let totalBranchHotBonus = 0;
+        let managerHotBonus = 0;
         for (const split of branchOrders) {
             for (const item of split.order.items) {
-                if (item.product.isHighEnd && item.saleBonusAmount) {
-                    const splitRatio = Number(split.splitPercent) / 100;
-                    totalBranchHotBonus += Number(item.saleBonusAmount) * item.quantity * splitRatio;
+                if (item.product.isHighEnd && item.managerBonusAmount) {
+                    const splitRatio = Number(split.splitAmount) / Number(split.order.totalAmount);
+                    managerHotBonus += Number(item.managerBonusAmount) * item.quantity * splitRatio;
                 }
             }
         }
-        const managerHotBonus = totalBranchHotBonus * 0.3;
 
         const shippingFees = branchOrders.reduce((sum, split) => {
-            const splitRatio = Number(split.splitPercent) / 100;
+            const splitRatio = Number(split.splitAmount) / Number(split.order.totalAmount);
             const deliveryFees = split.order.deliveries.reduce((dSum, delivery) =>
                 dSum + Number(delivery.deliveryFee || 0), 0);
             return sum + (deliveryFees * splitRatio);
@@ -480,7 +533,10 @@ export class DashboardService {
 
         return {
             role: 'MANAGER',
-            branchRevenue,
+            branchSalesRevenue,     // Doanh số bán chi nhánh
+            branchRevenue,          // Doanh số hoàn thành chi nhánh
+            branchPendingRevenue,   // Doanh số chờ thanh toán
+            branchSalesOrderCount,  // Tổng số đơn bán
             monthlyRevenue: branchRevenue,
             totalOrders,
             cashAmount,
@@ -529,7 +585,21 @@ export class DashboardService {
             orderBy: { targetRevenue: 'desc' }
         });
 
-        // 2. Fetch Order Splits for this month
+        // 2a. DOANH SỐ BÁN — Tất cả đơn theo ngày tạo đơn (orderDate)
+        const salesSplits = await this.prisma.orderSplit.findMany({
+            where: {
+                employeeId,
+                order: {
+                    status: { notIn: ['canceled', 'rejected'] },
+                    orderDate: { gte: startDate, lte: endDate }
+                }
+            },
+            select: { splitAmount: true }
+        });
+        const salesRevenue = salesSplits.reduce((sum, s) => sum + Number(s.splitAmount), 0);
+        const salesOrderCount = salesSplits.length;
+
+        // 2b. DOANH SỐ HOÀN THÀNH — Đơn đã xác nhận thanh toán (confirmedAt)
         const splits = await this.prisma.orderSplit.findMany({
             where: {
                 employeeId,
@@ -549,7 +619,7 @@ export class DashboardService {
             }
         });
 
-        let monthlyRevenue = 0;
+        let completedRevenue = 0;
         let lowPriceRevenue = 0;
         let lowPriceOrderCount = 0;
         let totalCommission = 0;
@@ -557,7 +627,7 @@ export class DashboardService {
 
         for (const split of splits) {
             const splitAmount = Number(split.splitAmount);
-            monthlyRevenue += splitAmount;
+            completedRevenue += splitAmount;
 
             const order = split.order;
             const orderTotal = Number(order.totalAmount);
@@ -602,18 +672,18 @@ export class DashboardService {
         });
         const shippingFees = deliveries.reduce((sum, d) => sum + Number(d.deliveryFee), 0);
 
-        // 4. Calculate Milestones & Rewards (consistent with employees.service.ts)
-        const achievedRule = salaryRules.find(rule => monthlyRevenue >= Number(rule.targetRevenue));
+        // 4. Calculate Milestones & Rewards — Dùng DOANH SỐ HOÀN THÀNH để tính lương
+        const achievedRule = salaryRules.find(rule => completedRevenue >= Number(rule.targetRevenue));
         const milestoneBonus = achievedRule ? Number(achievedRule.bonusAmount) : 0;
 
-        const lowPriceRatio = monthlyRevenue > 0 ? (lowPriceRevenue / monthlyRevenue) : 0;
+        const lowPriceRatio = completedRevenue > 0 ? (lowPriceRevenue / completedRevenue) : 0;
         const isPenalty = lowPriceRatio >= 0.2;
         let isClemency = false;
         let actualReward = milestoneBonus;
 
         if (isPenalty) {
             actualReward = milestoneBonus * 0.7;
-            if (achievedRule && monthlyRevenue >= Number(achievedRule.targetRevenue) * 1.1) {
+            if (achievedRule && completedRevenue >= Number(achievedRule.targetRevenue) * 1.1) {
                 actualReward = milestoneBonus;
                 isClemency = true;
             }
@@ -630,11 +700,18 @@ export class DashboardService {
             _sum: { splitAmount: true }
         });
 
+        // Chờ thanh toán = doanh số bán - doanh số hoàn thành
+        const pendingRevenue = salesRevenue - completedRevenue;
+
         return {
             role: 'SALE',
             totalRevenue: Number(allTimeRevenue._sum.splitAmount || 0),
-            monthlyRevenue,
-            orderCount: splits.length,
+            salesRevenue,           // Doanh số bán (tất cả đơn trong kỳ)
+            completedRevenue,       // Doanh số hoàn thành (đã xác nhận thanh toán)
+            pendingRevenue: Math.max(0, pendingRevenue), // Doanh số chờ thanh toán
+            monthlyRevenue: completedRevenue, // Backward compatible
+            salesOrderCount,        // Tổng số đơn bán
+            orderCount: splits.length, // Số đơn hoàn thành
             totalCommission,
             hotBonus: totalHotBonus,
             shippingFees,

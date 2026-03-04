@@ -100,6 +100,8 @@ export class OrdersService {
                     status: (deliveries && deliveries.length > 0) ? 'assigned' : 'pending',
                     productBonusAmount: calculatedProductBonusTotal,
                     createdBy: userId,
+                    provinceId: orderData.provinceId,
+                    wardId: orderData.wardId,
                     orderDate: orderData.orderDate ? new Date(orderData.orderDate) : new Date(),
                     customerCardIssueDate: (orderData.customerCardIssueDate && orderData.customerCardIssueDate.trim() !== '')
                         ? new Date(orderData.customerCardIssueDate)
@@ -157,6 +159,8 @@ export class OrdersService {
                     branch: true,
                     creator: { include: { employee: true } },
                     deliveries: { include: { driver: true } },
+                    province: true,
+                    ward: true,
                 }
             });
 
@@ -191,6 +195,8 @@ export class OrdersService {
                 branch: true,
                 deliveries: { include: { driver: true } },
                 creator: { include: { employee: true } },
+                province: true,
+                ward: true,
             }
         });
 
@@ -288,13 +294,15 @@ export class OrdersService {
                     ...orderData,
                     totalAmount,
                     giftAmount: totalGiftAmount,
+                    productBonusAmount: calculatedProductBonusTotal,
+                    provinceId: orderData.provinceId,
+                    wardId: orderData.wardId,
+                    orderDate: orderData.orderDate ? new Date(orderData.orderDate) : originalOrder.orderDate,
                     status: (deliveries && deliveries.length > 0 && (originalOrder as any).status === 'pending')
                         ? 'assigned'
-                        : (deliveries === null && (originalOrder as any).status === 'assigned') // if explicitly cleared
+                        : (deliveries === null && (originalOrder as any).status === 'assigned')
                             ? 'pending'
                             : undefined,
-                    productBonusAmount: calculatedProductBonusTotal,
-                    orderDate: orderData.orderDate ? new Date(orderData.orderDate) : undefined,
                     customerCardIssueDate: orderData.customerCardIssueDate ? new Date(orderData.customerCardIssueDate) : undefined,
                     items: items ? {
                         deleteMany: {},
@@ -354,6 +362,8 @@ export class OrdersService {
                     branch: true,
                     creator: { include: { employee: true } },
                     deliveries: { include: { driver: true } },
+                    province: true,
+                    ward: true,
                 }
             });
 
@@ -386,6 +396,8 @@ export class OrdersService {
                 payments: true,
                 branch: true,
                 deliveries: true,
+                province: true,
+                ward: true,
             }
         });
     }
@@ -487,7 +499,12 @@ export class OrdersService {
                 }
                 whereClause.OR = orConditions;
             } else if (['MANAGER'].includes(roleCode)) {
-                if (branchId) whereClause.branchId = branchId;
+                if (branchId && branchId !== 'all') {
+                    whereClause.OR = [
+                        { branchId: branchId },
+                        { splits: { some: { branchId: branchId } } }
+                    ];
+                }
             } else if (['DIRECTOR', 'CHIEF_ACCOUNTANT', 'ACCOUNTANT', 'BRANCH_ACCOUNTANT', 'MARKETING'].includes(roleCode)) {
                 // Global view - Only filter branch if explicitly provided
                 if (branchId && branchId !== 'all') {
@@ -693,7 +710,9 @@ export class OrdersService {
                     branch: true,
                     deliveries: { include: { driver: true } },
                     creator: { include: { employee: true } },
-                    confirmer: { include: { employee: true } }
+                    confirmer: { include: { employee: true } },
+                    province: true,
+                    ward: true,
                 },
                 orderBy: { createdAt: 'desc' },
                 skip,
