@@ -16,6 +16,7 @@ export class EmployeesService {
         branchId?: string;
         position?: string;
         status?: string;
+        department?: string;
         hasAccount?: 'true' | 'false';
         userId?: string;
         roleCode?: string;
@@ -55,6 +56,10 @@ export class EmployeesService {
 
         if (query.status) {
             where.status = query.status;
+        }
+
+        if (query.department) {
+            where.department = query.department;
         }
 
         // Filter by account existence
@@ -423,18 +428,33 @@ export class EmployeesService {
                 baseSalary = Number(achievedRule.baseSalary);
             }
 
-            // Commission calculation for Sale (Existing complex logic)
-            for (const split of splits) {
-                const splitAmount = Number(split.splitAmount);
-                const order = split.order;
-                const orderTotal = Number(order.totalAmount);
+            if (employee.position.toUpperCase() === 'TELESALE') {
+                // Telesale logic: 6,000,000 base + 0.2% system revenue
+                baseSalary = 6000000;
 
-                if (orderTotal > 0) {
-                    const shareRatio = splitAmount / orderTotal;
-                    for (const item of order.items) {
-                        const itemTotal = Number(item.totalPrice);
-                        const rate = item.isBelowMin ? 0.01 : 0.018;
-                        commission += itemTotal * rate * shareRatio;
+                const systemOrders = await this.prisma.order.findMany({
+                    where: {
+                        isPaymentConfirmed: true,
+                        confirmedAt: { gte: startDate, lte: endDate }
+                    }
+                });
+                const systemRevenue = systemOrders.reduce((sum, o) => sum + Number(o.totalAmount), 0);
+                commission = systemRevenue * 0.002;
+                totalRevenue = systemRevenue; // Display system revenue for Telesale performance
+            } else {
+                // Commission calculation for Sale (Existing complex logic)
+                for (const split of splits) {
+                    const splitAmount = Number(split.splitAmount);
+                    const order = split.order;
+                    const orderTotal = Number(order.totalAmount);
+
+                    if (orderTotal > 0) {
+                        const shareRatio = splitAmount / orderTotal;
+                        for (const item of order.items) {
+                            const itemTotal = Number(item.totalPrice);
+                            const rate = item.isBelowMin ? 0.01 : 0.018;
+                            commission += itemTotal * rate * shareRatio;
+                        }
                     }
                 }
             }

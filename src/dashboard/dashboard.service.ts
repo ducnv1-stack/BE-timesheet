@@ -255,6 +255,37 @@ export class DashboardService {
         // Sort by revenue for Top chart
         const topBranches = [...branchStats].sort((a, b) => b.revenue - a.revenue).slice(0, 5);
 
+        // ===== Advanced Stats: Best Sellers & Revenue Trend (ALL SYSTEM) =====
+        const reportOrders = await this.prisma.order.findMany({
+            where: orderWhere,
+            include: {
+                items: { include: { product: { select: { name: true } } } }
+            }
+        });
+
+        const productMap = new Map();
+        const trendMap = new Map();
+
+        reportOrders.forEach(o => {
+            // Products
+            o.items.forEach(item => {
+                const pName = item.product.name;
+                const current = productMap.get(pName) || { name: pName, quantity: 0, revenue: 0 };
+                current.quantity += item.quantity;
+                current.revenue += Number(item.totalPrice);
+                productMap.set(pName, current);
+            });
+
+            // Trend
+            const date = o.confirmedAt!.toISOString().split('T')[0];
+            const currentTrend = trendMap.get(date) || { date, revenue: 0 };
+            currentTrend.revenue += Number(o.totalAmount);
+            trendMap.set(date, currentTrend);
+        });
+
+        const bestSellers = Array.from(productMap.values()).sort((a, b) => b.quantity - a.quantity).slice(0, 5);
+        const revenueTrend = Array.from(trendMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+
         return {
             role: 'DIRECTOR', // Keep for FE component matching
             isGlobal: !branchId,
@@ -286,7 +317,9 @@ export class DashboardService {
                 count: Math.round((s.lowPriceRatio / 100) * s.orderCount),
                 total: s.orderCount,
                 ratio: s.lowPriceRatio
-            }))
+            })),
+            bestSellers,
+            revenueTrend
         };
     }
 
@@ -454,6 +487,33 @@ export class DashboardService {
             isAchieved: branchRevenue >= Number(rule.targetRevenue)
         }));
 
+        // ===== Advanced Stats: Best Sellers & Revenue Trend (BRANCH SPECIFIC) =====
+        const mgrProductMap = new Map();
+        const mgrTrendMap = new Map();
+
+        branchOrders.forEach(split => {
+            const o = split.order;
+            // Products
+            o.items.forEach(item => {
+                const pName = item.product.name;
+                const current = mgrProductMap.get(pName) || { name: pName, quantity: 0, revenue: 0 };
+                current.quantity += item.quantity;
+                current.revenue += Number(item.totalPrice);
+                mgrProductMap.set(pName, current);
+            });
+
+            // Trend (by confirmedAt date)
+            if (o.confirmedAt) {
+                const date = o.confirmedAt.toISOString().split('T')[0];
+                const currentTrend = mgrTrendMap.get(date) || { date, revenue: 0 };
+                currentTrend.revenue += Number(split.splitAmount);
+                mgrTrendMap.set(date, currentTrend);
+            }
+        });
+
+        const bestSellers = Array.from(mgrProductMap.values()).sort((a, b) => b.quantity - a.quantity).slice(0, 5);
+        const revenueTrend = Array.from(mgrTrendMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+
         // ========= 5. Phản hồi kết quả khi chưa đạt mốc doanh số tối thiểu =========
         if (!achievedRule) {
             return {
@@ -491,7 +551,9 @@ export class DashboardService {
                 },
                 milestones: allMilestones,
                 netIncome: 0,
-                message: 'Chưa đạt mốc doanh số tối thiểu'
+                message: 'Chưa đạt mốc doanh số tối thiểu',
+                bestSellers,
+                revenueTrend
             };
         }
 
@@ -565,7 +627,9 @@ export class DashboardService {
                 isClemency
             },
             milestones: allMilestones,
-            netIncome
+            netIncome,
+            bestSellers,
+            revenueTrend
         };
     }
 
@@ -733,7 +797,8 @@ export class DashboardService {
     }
 
     private async getTelesaleStats(employeeId?: string, userId?: string, startStr?: string, endStr?: string) {
-        if (!employeeId) return { error: 'No employee record found' };
+        // NOTE: For Telesale, since they earn 0.2% commission on the TOTAL system revenue,
+        // we don't strictly need the employeeId to calculate the main stats.
 
         const now = new Date();
         const startDate = startStr ? new Date(startStr) : new Date(now.getFullYear(), now.getMonth(), 1);
@@ -743,30 +808,85 @@ export class DashboardService {
             endDate.setHours(23, 59, 59, 999);
         }
 
-        // Get ALL orders where source is 'FACEBOOK' for the current month
+        const orderWhere: any = {
+            isPaymentConfirmed: true,
+            confirmedAt: { gte: startDate, lte: endDate },
+            status: { notIn: ['canceled', 'rejected'] }
+        };
+
+        // 1. Fetch orders with necessary inclusions for breakdown
         const orders = await this.prisma.order.findMany({
-            where: {
-                orderSource: { equals: 'FACEBOOK', mode: 'insensitive' },
-                isPaymentConfirmed: true,
-                confirmedAt: { gte: startDate, lte: endDate }
+            where: orderWhere,
+            include: {
+                branch: { select: { name: true } },
+                items: { include: { product: { select: { name: true } } } }
             }
         });
 
-        // Revenue is the sum of totalAmount for all monthly Facebook orders
-        const fbRevenue = orders.reduce((sum, order) => sum + Number(order.totalAmount), 0);
-        const fbOrderCount = orders.length;
+        // 2. Calculate Basic Stats
+        const systemRevenue = orders.reduce((sum, o) => sum + Number(o.totalAmount), 0);
+        const totalOrderCount = orders.length;
+        const baseSalary = 6000000;
+        const commission = systemRevenue * 0.002;
 
-        // Get commission rule (0.3% default if not in DB)
-        const rule = await this.prisma.telesaleSalaryRule.findFirst();
-        const rate = rule ? Number(rule.commissionPercent) / 100 : 0.003;
-        const commission = fbRevenue * rate;
+        // 3. Branch Stats
+        const branchMap = new Map();
+        orders.forEach(o => {
+            const bName = o.branch.name;
+            const current = branchMap.get(bName) || { name: bName, revenue: 0, orderCount: 0 };
+            current.revenue += Number(o.totalAmount);
+            current.orderCount += 1;
+            branchMap.set(bName, current);
+        });
+        const branchStats = Array.from(branchMap.values()).sort((a, b) => b.revenue - a.revenue);
+
+        // 4. Best Sellers
+        const productMap = new Map();
+        orders.forEach(o => {
+            o.items.forEach(item => {
+                const pName = item.product.name;
+                const current = productMap.get(pName) || { name: pName, quantity: 0, revenue: 0 };
+                current.quantity += item.quantity;
+                current.revenue += Number(item.totalPrice);
+                productMap.set(pName, current);
+            });
+        });
+        const bestSellers = Array.from(productMap.values())
+            .sort((a, b) => b.quantity - a.quantity)
+            .slice(0, 5);
+
+        // 5. Revenue Trend (Daily)
+        const trendMap = new Map();
+        orders.forEach(o => {
+            const date = o.confirmedAt!.toISOString().split('T')[0];
+            const current = trendMap.get(date) || { date, revenue: 0 };
+            current.revenue += Number(o.totalAmount);
+            trendMap.set(date, current);
+        });
+        const revenueTrend = Array.from(trendMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+
+        // 6. Source Breakdown
+        const sourceMap = new Map();
+        orders.forEach(o => {
+            const source = o.orderSource || 'Vãng lai';
+            const current = sourceMap.get(source) || { source, revenue: 0, count: 0 };
+            current.revenue += Number(o.totalAmount);
+            current.count += 1;
+            sourceMap.set(source, current);
+        });
+        const sourceBreakdown = Array.from(sourceMap.values()).sort((a, b) => b.revenue - a.revenue);
 
         return {
             role: 'TELESALE',
-            fbRevenue,
-            fbOrderCount,
+            systemRevenue,
+            totalOrderCount,
+            baseSalary,
             commission,
-            recentOrders: orders.slice(0, 5)
+            netIncome: baseSalary + commission,
+            branchStats,
+            bestSellers,
+            revenueTrend,
+            sourceBreakdown
         };
     }
 
