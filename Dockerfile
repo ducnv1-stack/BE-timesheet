@@ -1,7 +1,7 @@
 # ============================================
 # Stage 1: Build
 # ============================================
-FROM node:18-alpine AS builder
+FROM node:20-alpine AS builder
 
 WORKDIR /app
 
@@ -20,7 +20,7 @@ RUN npm run build
 # ============================================
 # Stage 2: Production
 # ============================================
-FROM node:18-alpine AS production
+FROM node:20-alpine AS production
 
 WORKDIR /app
 
@@ -39,4 +39,4 @@ COPY --from=builder /app/dist ./dist
 EXPOSE 3001
 
 # Run prisma migrations then start the app
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main.js"]
+CMD ["sh", "-c", "npx prisma migrate deploy && (node dist/main.js || node dist/src/main.js)"]
