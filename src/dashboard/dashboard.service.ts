@@ -133,6 +133,7 @@ export class DashboardService {
         ]);
 
         const totalRevenue = Number(revResult._sum.totalAmount || 0);
+        const totalOrders = salesOrderCount; // Bao gồm tất cả đơn trong kỳ (không chỉ đơn đã confirm)
         const salesRevenue = Number(salesRevResult._sum.totalAmount || 0);
         const unconfirmedRevenue = Number(unconfirmedRevResult._sum.totalAmount || 0);
         const pendingInstallmentRevenue = Number(pendingInstallmentRevResult._sum.totalAmount || 0);
@@ -243,7 +244,8 @@ export class DashboardService {
                 salesRevenue: branchSalesRevenue, // Doanh số bán
                 revenue,                           // Doanh số hoàn thành
                 pendingRevenue: Math.max(0, branchSalesRevenue - revenue), // Chờ thanh toán
-                orderCount: revenueOrders.length,
+                orderCount: revenueOrders.length, // Đơn đã xác nhận
+                totalOrders: allOrdersInPeriod.length, // Tổng đơn phát sinh (bao gồm cả đơn chưa xác nhận)
                 salesOrderCount: allOrdersInPeriod.length,
                 lowPriceRatio: revenueOrders.length > 0 ? Math.round((lowPriceOrders / revenueOrders.length) * 100) : 0,
                 unconfirmedOrders,
@@ -276,8 +278,8 @@ export class DashboardService {
                 productMap.set(pName, current);
             });
 
-            // Trend
-            const date = o.confirmedAt!.toISOString().split('T')[0];
+            // Trend (Adjust to GMT+7 before grouping by date)
+            const date = new Date(o.confirmedAt!.getTime() + 7 * 60 * 60 * 1000).toISOString().split('T')[0];
             const currentTrend = trendMap.get(date) || { date, revenue: 0 };
             currentTrend.revenue += Number(o.totalAmount);
             trendMap.set(date, currentTrend);
@@ -294,7 +296,8 @@ export class DashboardService {
             totalRevenue,           // Doanh số hoàn thành (backward compatible)
             completedRevenue: totalRevenue,
             pendingRevenueTotal: Math.max(0, salesRevenue - totalRevenue),
-            totalOrders: ordersCount,
+            totalOrders,
+            orderCount: ordersCount, // Số đơn đã xác nhận
             unconfirmedCount,
             unconfirmedRevenue,
             pendingInstallmentCount,
@@ -410,11 +413,12 @@ export class DashboardService {
         };
 
         const [totalOrders, unconfirmedCount, pendingInstallmentCount, unissuedInvoiceCount, activeEmployees, eligibleOrders] = await Promise.all([
-            // Tổng đơn trong kỳ
+            // Tổng đơn trong kỳ (Bao gồm đơn chưa xác nhận)
             this.prisma.order.count({
                 where: {
-                    ...orderWhere,
-                    status: { notIn: ['canceled', 'rejected'] }
+                    branchId,
+                    status: { notIn: ['canceled', 'rejected'] },
+                    orderDate: { gte: startDate, lte: endDate }
                 }
             }),
 
@@ -502,9 +506,9 @@ export class DashboardService {
                 mgrProductMap.set(pName, current);
             });
 
-            // Trend (by confirmedAt date)
+            // Trend (by confirmedAt date, adjusted to GMT+7)
             if (o.confirmedAt) {
-                const date = o.confirmedAt.toISOString().split('T')[0];
+                const date = new Date(o.confirmedAt.getTime() + 7 * 60 * 60 * 1000).toISOString().split('T')[0];
                 const currentTrend = mgrTrendMap.get(date) || { date, revenue: 0 };
                 currentTrend.revenue += Number(split.splitAmount);
                 mgrTrendMap.set(date, currentTrend);
@@ -764,8 +768,51 @@ export class DashboardService {
             _sum: { splitAmount: true }
         });
 
+        // 6. Calculate Period KPI (3 periods per month)
+        const periodTarget = 200000000 / 3;
+        const periods = [
+            { start: new Date(startDate.getFullYear(), startDate.getMonth(), 1), end: new Date(startDate.getFullYear(), startDate.getMonth(), 10, 23, 59, 59, 999), label: 'Kỳ 1' },
+            { start: new Date(startDate.getFullYear(), startDate.getMonth(), 11), end: new Date(startDate.getFullYear(), startDate.getMonth(), 20, 23, 59, 59, 999), label: 'Kỳ 2' },
+            { start: new Date(startDate.getFullYear(), startDate.getMonth(), 21), end: new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0, 23, 59, 59, 999), label: 'Kỳ 3' }
+        ];
+
+        const periodStats = periods.map(p => {
+            const periodRevenue = splits.filter(s => {
+                const confirmedAt = s.order.confirmedAt;
+                return confirmedAt && confirmedAt >= p.start && confirmedAt <= p.end;
+            }).reduce((sum, s) => sum + Number(s.splitAmount), 0);
+
+            const isUpcoming = now < p.start;
+            const isOngoing = now >= p.start && now <= p.end;
+            const isFinished = now > p.end;
+
+            const isAchieved = periodRevenue >= periodTarget;
+            let bonus = 0;
+            let status = 'upcoming';
+
+            if (isFinished || isOngoing) {
+                bonus = isAchieved ? 300000 : -200000;
+                status = isOngoing ? 'ongoing' : (isAchieved ? 'achieved' : 'failed');
+            }
+
+            return {
+                label: p.label,
+                startDate: p.start,
+                endDate: p.end,
+                revenue: periodRevenue,
+                target: periodTarget,
+                bonus,
+                status
+            };
+        });
+
+        const totalPeriodBonus = periodStats.reduce((sum, p) => sum + p.bonus, 0);
+
         // Chờ thanh toán = doanh số bán - doanh số hoàn thành
         const pendingRevenue = salesRevenue - completedRevenue;
+
+        const baseSalary = 8000000;
+        const netIncome = baseSalary + actualReward + totalCommission + totalHotBonus + shippingFees + totalPeriodBonus;
 
         return {
             role: 'SALE',
@@ -779,7 +826,10 @@ export class DashboardService {
             totalCommission,
             hotBonus: totalHotBonus,
             shippingFees,
-            baseSalary: 8000000, // Fixed base salary for Sales staff (NVBH)
+            baseSalary, // Fixed base salary for Sales staff (NVBH)
+            periodBonus: totalPeriodBonus,
+            periodStats,
+            netIncome,
             lowPriceStats: {
                 count: lowPriceOrderCount,
                 value: lowPriceRevenue,
@@ -825,7 +875,13 @@ export class DashboardService {
 
         // 2. Calculate Basic Stats
         const systemRevenue = orders.reduce((sum, o) => sum + Number(o.totalAmount), 0);
-        const totalOrderCount = orders.length;
+        // Đếm tổng đơn bao gồm cả đơn chưa xác nhận cho thống kê
+        const totalOrderCount = await this.prisma.order.count({
+            where: {
+                status: { notIn: ['canceled', 'rejected'] },
+                orderDate: { gte: startDate, lte: endDate }
+            }
+        });
         const baseSalary = 6000000;
         const commission = systemRevenue * 0.002;
 
@@ -855,10 +911,10 @@ export class DashboardService {
             .sort((a, b) => b.quantity - a.quantity)
             .slice(0, 5);
 
-        // 5. Revenue Trend (Daily)
+        // 5. Revenue Trend (Daily, adjusted to GMT+7)
         const trendMap = new Map();
         orders.forEach(o => {
-            const date = o.confirmedAt!.toISOString().split('T')[0];
+            const date = new Date(o.confirmedAt!.getTime() + 7 * 60 * 60 * 1000).toISOString().split('T')[0];
             const current = trendMap.get(date) || { date, revenue: 0 };
             current.revenue += Number(o.totalAmount);
             trendMap.set(date, current);

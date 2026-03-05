@@ -1,6 +1,8 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { LoginUserDto } from './dto/login-user.dto';
+import { VerifyPasswordDto } from './dto/verify-password.dto';
+import * as bcrypt from 'bcrypt';
 
 @Injectable()
 export class AuthService {
@@ -46,5 +48,23 @@ export class AuthService {
         }
 
         return { isActive: user.isActive };
+    }
+
+    async verifyPassword(verifyPasswordDto: VerifyPasswordDto) {
+        const { userId, password } = verifyPasswordDto;
+        const user = await this.prisma.user.findUnique({
+            where: { id: userId },
+        });
+
+        if (!user) {
+            throw new BadRequestException('Người dùng không tồn tại');
+        }
+
+        const isMatch = await bcrypt.compare(password, user.passwordHash);
+        if (!isMatch) {
+            throw new UnauthorizedException('Mật khẩu không chính xác');
+        }
+
+        return { success: true };
     }
 }

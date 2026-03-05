@@ -188,16 +188,18 @@ export class EmployeesService {
     async remove(id: string) {
         const employee = await this.findOne(id);
 
-        // Check if employee has a user account
+        // If employee has a user account, delete it first or Prisma will throw foreign key constraint error
         if (employee.userId) {
-            throw new BadRequestException('Cannot delete employee with an active user account. Please remove the account first.');
+            await this.prisma.user.delete({
+                where: { id: employee.userId }
+            });
         }
 
         await this.prisma.employee.delete({
             where: { id },
         });
 
-        return { message: 'Employee deleted successfully' };
+        return { message: 'Employee and associated account deleted successfully' };
     }
 
     // ========== ACCOUNT MANAGEMENT ==========
