@@ -77,37 +77,11 @@ export class AttendanceService {
             throw new BadRequestException('Bạn đã chấm công vào hôm nay rồi');
         }
 
-        // Kiểm tra số lần thử nếu ngoài phạm vi
+        // Kiểm tra số lần thử (Ghi nhận nhưng không giới hạn nữa theo yêu cầu)
         const attemptCount = attendance ? attendance.checkInAttempts + 1 : 1;
 
         if (!isWithinRange) {
-            if (attemptCount >= 3) {
-                // Đã hết lượt thử
-                if (!attendance) {
-                    await this.prisma.attendance.create({
-                        data: {
-                            employeeId,
-                            branchId: employee.branchId,
-                            date: today,
-                            checkInAttempts: attemptCount,
-                            checkInStatus: 'OUT_OF_RANGE',
-                            dailyStatus: 'ABSENT_UNAPPROVED',
-                            note: `Thử lần ${attemptCount} thất bại: Ngoài phạm vi (${distance}m)`,
-                        }
-                    });
-                } else {
-                    await this.prisma.attendance.update({
-                        where: { id: attendance.id },
-                        data: {
-                            checkInAttempts: attemptCount,
-                            note: `${attendance.note || ''} | Thử lần ${attemptCount} thất bại: Ngoài phạm vi (${distance}m)`,
-                        }
-                    });
-                }
-                throw new BadRequestException(`Bạn đang nằm ngoài phạm vi công ty (${distance}m). Đã dùng hết 3 lượt thử.`);
-            }
-
-            // Ghi nhận lần thử thất bại
+            // Ghi nhận lần thử thất bại vào DB
             if (!attendance) {
                 await this.prisma.attendance.create({
                     data: {
@@ -123,7 +97,7 @@ export class AttendanceService {
                     data: { checkInAttempts: attemptCount }
                 });
             }
-            throw new BadRequestException(`Ngoài phạm vi cho phép (${distance}m). Bạn còn ${3 - attemptCount} lần thử.`);
+            throw new BadRequestException(`Ngoài phạm vi cho phép (${distance}m). Vui lòng di chuyển lại gần chi nhánh và thử lại.`);
         }
 
         // Nếu trong phạm vi, thực hiện check-in thành công
@@ -221,6 +195,13 @@ export class AttendanceService {
             dto.latitude, dto.longitude,
             attendance.employee.branch.latitude as number, attendance.employee.branch.longitude as number
         );
+
+        // Kiểm tra phạm vi
+        const isWithinRange = distance <= attendance.employee.branch.checkinRadius;
+
+        if (!isWithinRange) {
+            throw new BadRequestException(`Ngoài phạm vi cho phép (${distance}m) để Check-out. Vui lòng di chuyển lại gần chi nhánh.`);
+        }
 
         // Tính toán trạng thái checkout
         let checkOutStatus = 'ON_TIME';
