@@ -1,0 +1,139 @@
+{
+  "products": [
+    {
+      "id": "ad28126f-2695-4239-a796-393c130d4cb5",
+      "name": "Ghế massage Dream1",
+      "minPrice": "28000000",
+      "isHighEnd": false,
+      "hotBonus": "0",
+      "createdAt": "2026-02-02T08:19:20.183Z",
+      "bonusRules": []
+    },
+    {
+      "id": "e05fe28b-eadd-4399-bcbd-9fb9419be1b8",
+      "name": "Ghế massage Dream2",
+      "minPrice": "22000000",
+      "isHighEnd": false,
+      "hotBonus": "0",
+      "createdAt": "2026-02-02T08:19:20.189Z",
+      "bonusRules": []
+    },
+    {
+      "id": "795e0ca0-78c0-47c4-8063-00bc97d435d2",
+      "name": "Ghế massage Tenshi",
+      "minPrice": "40000000",
+      "isHighEnd": false,
+      "hotBonus": "0",
+      "createdAt": "2026-02-02T08:19:20.199Z",
+      "bonusRules": []
+    },
+    {
+      "id": "bbe5d030-db06-448b-9b69-32922b7db490",
+      "name": "Ghế massage Sora",
+      "minPrice": "34000000",
+      "isHighEnd": false,
+      "hotBonus": "0",
+      "createdAt": "2026-02-02T08:19:20.204Z",
+      "bonusRules": []
+    },
+    {
+      "id": "8bf37c60-52cf-44e4-b620-d09b8d1fd2f9",
+      "name": "Ghế massage JP618",
+      "minPrice": "28000000",
+      "isHighEnd": false,
+      "hotBonus": "0",
+      "createdAt": "2026-02-02T08:19:20.209Z",
+      "bonusRules": []
+    },
+    {
+      "id": "2925eecd-cbd8-404a-a316-51ec0c90b93a",
+      "name": "Ghế massage Shiatsu",
+      "minPrice": "85000000",
+      "isHighEnd": true,
+      "hotBonus": "0",
+      "createdAt": "2026-02-02T08:19:20.151Z",
+      "bonusRules": [
+        {
+          "id": "106cac71-6163-4cf6-9880-cb7022192774",
+          "minSellPrice": "80000000",
+          "bonusAmount": "1000000",
+          "salePercent": "0",
+          "managerPercent": "0"
+        },
+        {
+          "id": "c03894ee-03e7-4a84-8d96-9187525db6ff",
+          "minSellPrice": "85000000",
+          "bonusAmount": "2000000",
+          "salePercent": "70",
+          "managerPercent": "30"
+        },
+        {
+          "id": "c8759ebe-8319-4e69-80f4-8edca9d4da3b",
+          "minSellPrice": "90000000",
+          "bonusAmount": "5000000",
+          "salePercent": "70",
+          "managerPercent": "30"
+        }
+      ]
+    },
+    {
+      "id": "da99ed7f-93d0-4702-bd12-fda221a61d8c",
+      "name": "Ghế massage Imperial",
+      "minPrice": "120000000",
+      "isHighEnd": true,
+      "hotBonus": "0",
+      "createdAt": "2026-02-02T08:19:20.174Z",
+      "bonusRules": [
+        {
+          "id": "cb1857ab-3ba1-4774-8696-da055c116f2d",
+          "minSellPrice": "120000000",
+          "bonusAmount": "5000000",
+          "salePercent": "70",
+          "managerPercent": "30"
+        },
+        {
+          "id": "60110c8c-7a8c-41df-b7fc-dc93f724715e",
+          "minSellPrice": "139000000",
+          "bonusAmount": "10000000",
+          "salePercent": "70",
+          "managerPercent": "30"
+        }
+      ]
+    },
+    {
+      "id": "5c347e2a-dcf3-45e8-b775-ec2427c0703f",
+      "name": "Ghế massage Kyoshi",
+      "minPrice": "65000000",
+      "isHighEnd": false,
+      "hotBonus": "0",
+      "createdAt": "2026-02-02T08:19:20.216Z",
+      "bonusRules": []
+    },
+    {
+      "id": "f27aa3b0-f201-4493-884e-733168115efa",
+      "name": "Kính massage",
+      "minPrice": "2500000",
+      "isHighEnd": false,
+      "hotBonus": "0",
+      "createdAt": "2026-02-02T08:19:20.221Z",
+      "bonusRules": [
+        {
+          "id": "21807fd8-b1e6-4094-8155-60d39efed131",
+          "minSellPrice": "2500000",
+          "bonusAmount": "3000000",
+          "salePercent": "0",
+          "managerPercent": "0"
+        }
+      ]
+    },
+    {
+      "id": "a963e462-3e85-4603-8917-0bcb2c6a6616",
+      "name": "Ghế massage JP191",
+      "minPrice": "16000000",
+      "isHighEnd": false,
+      "hotBonus": "0",
+      "createdAt": "2026-02-02T08:19:20.194Z",
+      "bonusRules": []
+    }
+  ]
+}
