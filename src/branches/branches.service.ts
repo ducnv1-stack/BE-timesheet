@@ -10,4 +10,11 @@ export class BranchesService {
             orderBy: { name: 'asc' },
         });
     }
+
+    update(id: string, data: { latitude?: number, longitude?: number, checkinRadius?: number }) {
+        return this.prisma.branch.update({
+            where: { id },
+            data,
+        });
+    }
 }

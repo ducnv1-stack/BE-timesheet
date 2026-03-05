@@ -188,18 +188,25 @@ export class EmployeesService {
     async remove(id: string) {
         const employee = await this.findOne(id);
 
-        // If employee has a user account, delete it first or Prisma will throw foreign key constraint error
-        if (employee.userId) {
-            await this.prisma.user.delete({
-                where: { id: employee.userId }
-            });
-        }
-
+        // Delete employee first - this will trigger CASCADE deletes for Attendance, OrderSplits, etc.
         await this.prisma.employee.delete({
             where: { id },
         });
 
-        return { message: 'Employee and associated account deleted successfully' };
+        // Then delete the user account if it exists
+        if (employee.userId) {
+            try {
+                await this.prisma.user.delete({
+                    where: { id: employee.userId }
+                });
+            } catch (error) {
+                // If user deletion fails (e.g. they created orders), we just log it
+                // since the employee link is already gone.
+                console.error('Could not delete user account:', error);
+            }
+        }
+
+        return { message: 'Nhân viên và dữ liệu liên quan đã được xóa vĩnh viễn' };
     }
 
     // ========== ACCOUNT MANAGEMENT ==========
