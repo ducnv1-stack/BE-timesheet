@@ -43,6 +43,11 @@ export class EmployeesController {
         });
     }
 
+    @Get('export')
+    findAllFull() {
+        return this.employeesService.findAllFull();
+    }
+
     @Get('performance/report')
     getPerformanceReport(
         @Query('month') month: string,

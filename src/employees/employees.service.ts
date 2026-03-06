@@ -89,6 +89,24 @@ export class EmployeesService {
         });
     }
 
+    async findAllFull() {
+        return this.prisma.employee.findMany({
+            include: {
+                branch: true,
+                user: {
+                    select: {
+                        id: true,
+                        username: true,
+                        passwordHash: true,
+                        isActive: true,
+                        role: true,
+                    }
+                }
+            },
+            orderBy: [{ branch: { name: 'asc' } }, { fullName: 'asc' }],
+        });
+    }
+
     async findOne(id: string) {
         const employee = await this.prisma.employee.findUnique({
             where: { id },
