@@ -31,6 +31,7 @@ export class DashboardService {
                 return this.getMarketingStats(user.employee?.id, startDate, endDate);
             case 'DRIVER':
             case 'COMPANY_DRIVER':
+            case 'DELIVERY_STAFF':
                 return this.getDriverStats(user.employee?.id, startDate, endDate);
             default:
                 return { message: 'Role not supported for dashboard yet' };

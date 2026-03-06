@@ -16,6 +16,8 @@ async function main() {
         { code: 'TELESALE', name: 'Telesale' },
         { code: 'MARKETING', name: 'Marketing' },
         { code: 'DRIVER', name: 'Lái xe' },
+        { code: 'DELIVERY_STAFF', name: 'Nhân viên giao hàng' },
+        { code: 'HR', name: 'Hành chính nhân sự' },
     ];
 
     const roles: Record<string, any> = {};

@@ -26,7 +26,7 @@ export class EmployeesService {
 
         // Role-based visibility logic
         if (roleCode && userId) {
-            if (['DIRECTOR', 'CHIEF_ACCOUNTANT', 'ACCOUNTANT'].includes(roleCode)) {
+            if (['DIRECTOR', 'CHIEF_ACCOUNTANT', 'ACCOUNTANT', 'BRANCH_ACCOUNTANT', 'HR'].includes(roleCode)) {
                 // Global: No forced filters, use query filters if provided
                 if (query.branchId) where.branchId = query.branchId;
             } else if (['MANAGER'].includes(roleCode)) {
@@ -64,7 +64,7 @@ export class EmployeesService {
 
         // Filter by account existence
         if (query.hasAccount === 'true') {
-            where.userId = roleCode && !['DIRECTOR', 'CHIEF_ACCOUNTANT', 'MANAGER', 'ACCOUNTANT'].includes(roleCode)
+            where.userId = roleCode && !['DIRECTOR', 'CHIEF_ACCOUNTANT', 'MANAGER', 'ACCOUNTANT', 'BRANCH_ACCOUNTANT', 'HR'].includes(roleCode)
                 ? where.userId // Keep personal filter
                 : { not: null };
         } else if (query.hasAccount === 'false') {
@@ -527,6 +527,9 @@ export class EmployeesService {
 
     async getPerformanceReport(month: number, year: number) {
         const employees = await this.prisma.employee.findMany({
+            where: {
+                status: { not: 'Nghỉ việc' }
+            },
             include: { branch: true }
         });
 
@@ -537,7 +540,11 @@ export class EmployeesService {
                 ...stats,
                 employeeId: emp.id,
                 fullName: emp.fullName,
-                branchName: emp.branch?.name
+                branchId: emp.branchId,
+                branchName: emp.branch?.name,
+                position: emp.position,
+                department: emp.department,
+                status: emp.status
             });
         }
         return report;
