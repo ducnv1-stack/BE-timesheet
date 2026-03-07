@@ -519,10 +519,25 @@ export class OrdersService {
         const globalFilters: any[] = [];
 
         if (search) {
+            // Find orders by ID if search looks like a UUID or first part of it (hex + hyphens)
+            let orderIdsByCode: string[] = [];
+            if (/^[0-9a-fA-F-]+$/.test(search) && search.length >= 4) {
+                try {
+                    const matchedIds = await this.prisma.$queryRawUnsafe<{ id: string }[]>(
+                        `SELECT id FROM orders WHERE id::text ILIKE $1`,
+                        `%${search}%`
+                    );
+                    orderIdsByCode = matchedIds.map(o => o.id);
+                } catch (e) {
+                    console.error('Error searching by order ID:', e);
+                }
+            }
+
             globalFilters.push({
                 OR: [
                     { customerName: { contains: search, mode: 'insensitive' } },
                     { customerPhone: { contains: search } },
+                    ...(orderIdsByCode.length > 0 ? [{ id: { in: orderIdsByCode } }] : [])
                 ]
             });
         }
@@ -833,6 +848,13 @@ export class OrdersService {
         });
 
         if (!order) throw new BadRequestException('Order not found');
+
+        const totalPaid = order.payments?.reduce((sum, p) => sum + Number(p.amount), 0) || 0;
+        const totalAmount = Number(order.totalAmount);
+
+        if (totalPaid < totalAmount) {
+            throw new BadRequestException(`Đơn hàng chưa thanh toán đủ (Thiếu: ${totalAmount - totalPaid}). Vui lòng cập nhật thông tin thanh toán trước khi xác nhận.`);
+        }
 
         return this.prisma.$transaction(async (tx) => {
             const updatedOrder = await tx.order.update({

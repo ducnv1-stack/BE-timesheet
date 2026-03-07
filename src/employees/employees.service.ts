@@ -339,180 +339,180 @@ export class EmployeesService {
         const startDate = new Date(year, month - 1, 1);
         const endDate = new Date(year, month, 0, 23, 59, 59);
 
-        // Fetch employee to check role
-        const employee = await this.prisma.employee.findUnique({ where: { id } });
+        const employee = await this.prisma.employee.findUnique({
+            where: { id },
+            include: { user: { include: { role: true } } }
+        });
         if (!employee) throw new NotFoundException('Employee not found');
 
-        // Fetch salary rules (milestones)
-        const salaryRules = await this.prisma.salesSalaryRule.findMany({
-            orderBy: { targetRevenue: 'desc' }
-        });
+        const position = employee.position || '';
+        const roleCode = employee.user?.role?.code || '';
 
-        // Fetch order splits for the employee in the given month
-        const splits = await this.prisma.orderSplit.findMany({
-            where: {
-                employeeId: id,
-                order: {
-                    isPaymentConfirmed: true,
-                    confirmedAt: { gte: startDate, lte: endDate }
-                }
-            },
-            include: {
-                order: {
-                    include: {
-                        items: { include: { product: true } }
-                    }
-                }
-            }
-        });
+        // Category mapping
+        const isManager = ['manager', 'quản lý', 'gdkd', 'gđkd'].includes(position.toLowerCase()) || roleCode === 'MANAGER';
+        const isSale = ['nvbh', 'sale'].includes(position.toLowerCase()) || roleCode === 'SALE';
+        const isMarketing = ['marketing'].includes(position.toLowerCase()) || roleCode === 'MARKETING';
+        const isTelesale = ['telesale'].includes(position.toLowerCase()) || roleCode === 'TELESALE';
+        const isDriver = ['nvgh', 'lái xe'].includes(position.toLowerCase()) || ['DRIVER', 'COMPANY_DRIVER', 'DELIVERY_STAFF'].includes(roleCode);
 
-        // Fetch deliveries for shipping fees
-        const deliveries = await this.prisma.delivery.findMany({
-            where: {
-                driverId: id,
-                order: {
-                    isPaymentConfirmed: true,
-                    confirmedAt: { gte: startDate, lte: endDate }
-                }
-            }
-        });
-
-        const shippingFee = deliveries.reduce((sum, d) => sum + Number(d.deliveryFee), 0);
-
+        // Common metrics
+        let totalOrders = 0;
         let totalRevenue = 0;
         let lowPriceValue = 0;
-        let hotBonus = 0;
+        let lowPriceRatio = 0;
         let commission = 0;
-        const processedOrders = new Set<string>();
-
-        // Manager Commission Rule (Example: 1% if manager? But for now user asked simply.
-        // Assuming Commission is 0 for Sale, and Hot Bonus is from High End)
-        // If employee is Manager, logic might differ, but let's stick to the requested structure first.
-
-        for (const split of splits) {
-            const splitAmount = Number(split.splitAmount);
-            totalRevenue += splitAmount;
-            processedOrders.add(split.orderId);
-
-            const order = split.order;
-            const orderTotal = Number(order.totalAmount);
-
-            if (orderTotal > 0) {
-                let orderLowPriceValue = 0;
-                let orderHotBonus = 0;
-
-                for (const item of order.items) {
-                    // Check Low Price
-                    if (Number(item.unitPrice) < Number(item.product.minPrice)) {
-                        orderLowPriceValue += Number(item.unitPrice) * item.quantity;
-                    }
-
-                    // Hot Bonus (High-end product bonus)
-                    if (item.product.isHighEnd) {
-                        orderHotBonus += Number(item.saleBonusAmount) * item.quantity;
-                    }
-                }
-
-                // Apply split ratio to metrics
-                const shareRatio = splitAmount / orderTotal;
-                lowPriceValue += orderLowPriceValue * shareRatio;
-                hotBonus += orderHotBonus * shareRatio;
-            }
-        }
-
-        // Determine calculation mode based on role/position
-        const isManager = employee.position.toLowerCase() === 'manager';
+        let hotBonus = 0;
+        let shippingFee = 0;
         let baseSalary = 0;
         let baseReward = 0;
-        commission = 0; // Reset to recalculate based on role
+        let actualReward = 0;
+        let milestone = 0;
+        let isPenalty = false;
+        let isClemency = false;
+
+        // Branch metrics (for reference)
+        const branchOrders = await this.prisma.order.findMany({
+            where: {
+                branchId: employee.branchId,
+                isPaymentConfirmed: true,
+                confirmedAt: { gte: startDate, lte: endDate }
+            },
+            include: { deliveries: true, items: { include: { product: true } } }
+        });
+        const branchTotalOrders = branchOrders.length;
+        const branchTotalRevenue = branchOrders.reduce((sum, o) => sum + Number(o.totalAmount), 0);
 
         if (isManager) {
-            // Manager logic: Use branch-specific rules
-            const managerRules = await this.prisma.branchManagerSalaryRule.findMany({
+            // MANAGER LOGIC
+            const rules = await this.prisma.branchManagerSalaryRule.findMany({
                 where: { branchId: employee.branchId },
                 orderBy: { targetRevenue: 'desc' }
             });
 
-            const achievedRule = managerRules.find(rule => totalRevenue >= Number(rule.targetRevenue));
+            totalRevenue = branchTotalRevenue;
+            totalOrders = branchTotalOrders;
 
+            const achievedRule = rules.find(r => totalRevenue >= Number(r.targetRevenue));
             if (achievedRule) {
                 baseSalary = Number(achievedRule.baseSalary);
                 baseReward = Number(achievedRule.bonusAmount);
-                // commissionPercent in rules is like 1.5 meaning 1.5%, so divide by 100
                 commission = totalRevenue * (Number(achievedRule.commissionPercent) / 100);
-            } else {
-                // Fallback if no rules found or revenue is below lowest threshold
-                baseSalary = 6000000;
-            }
-        } else {
-            // Sale/NVBH logic: Existing logic
-            const achievedRule = salaryRules.find(rule => totalRevenue >= Number(rule.targetRevenue));
-            baseReward = achievedRule ? Number(achievedRule.bonusAmount) : 0;
-
-            if (employee.position === 'NVBH') {
-                baseSalary = 8000000;
-            } else if (achievedRule) {
-                baseSalary = Number(achievedRule.baseSalary);
+                milestone = Number(achievedRule.targetRevenue);
             }
 
-            if (employee.position.toUpperCase() === 'TELESALE') {
-                // Telesale logic: 6,000,000 base + 0.2% system revenue
-                baseSalary = 6000000;
-
-                const systemOrders = await this.prisma.order.findMany({
-                    where: {
-                        isPaymentConfirmed: true,
-                        confirmedAt: { gte: startDate, lte: endDate }
+            // Manager Hot Bonus & Low Price from ALL branch orders
+            for (const o of branchOrders) {
+                for (const item of o.items) {
+                    if (item.product.isHighEnd && item.managerBonusAmount) {
+                        hotBonus += Number(item.managerBonusAmount) * item.quantity;
                     }
-                });
-                const systemRevenue = systemOrders.reduce((sum, o) => sum + Number(o.totalAmount), 0);
-                commission = systemRevenue * 0.002;
-                totalRevenue = systemRevenue; // Display system revenue for Telesale performance
-            } else {
-                // Commission calculation for Sale (Existing complex logic)
-                for (const split of splits) {
-                    const splitAmount = Number(split.splitAmount);
-                    const order = split.order;
-                    const orderTotal = Number(order.totalAmount);
-
-                    if (orderTotal > 0) {
-                        const shareRatio = splitAmount / orderTotal;
-                        for (const item of order.items) {
-                            const itemTotal = Number(item.totalPrice);
-                            const rate = item.isBelowMin ? 0.01 : 0.018;
-                            commission += itemTotal * rate * shareRatio;
-                        }
+                    if (item.isBelowMin) {
+                        lowPriceValue += Number(item.totalPrice);
                     }
                 }
             }
-        }
+            shippingFee = branchOrders.reduce((s, o) => s + o.deliveries.reduce((ds, d) => ds + Number(d.deliveryFee || 0), 0), 0);
 
-        // Performance Penalty/Clemency Logic (Mainly for Sales, but let's see if it applies to Manager)
-        let actualReward = baseReward;
-        const ratio = totalRevenue > 0 ? (lowPriceValue / totalRevenue) : 0;
-        const isPenalty = ratio >= 0.2;
-        let isClemency = false;
+            lowPriceRatio = totalRevenue > 0 ? (lowPriceValue / totalRevenue) : 0;
+            isPenalty = lowPriceRatio >= 0.2;
+            isClemency = !!achievedRule && totalRevenue >= Number(achievedRule.targetRevenue) * 1.1;
+            actualReward = isPenalty && !isClemency ? baseReward * 0.7 : baseReward;
 
-        if (isPenalty) {
-            actualReward = baseReward * 0.7;
-            const saleRule = isManager ? null : salaryRules.find(rule => totalRevenue >= Number(rule.targetRevenue));
-            if (!isManager && saleRule && totalRevenue >= Number(saleRule.targetRevenue) * 1.1) {
-                actualReward = baseReward;
-                isClemency = true;
+        } else if (isMarketing) {
+            // MARKETING LOGIC: Commission calculated per-branch threshold achievement
+            const mRules = await this.prisma.marketingSalaryRule.findMany({ where: { employeeId: id } });
+            const rule = mRules[0];
+
+            const allBranchesData = await this.prisma.branch.findMany({
+                include: { orders: { where: { isPaymentConfirmed: true, confirmedAt: { gte: startDate, lte: endDate } } } }
+            });
+
+            const systemRevenue = allBranchesData.reduce((sum, b) => sum + b.orders.reduce((s, o) => s + Number(o.totalAmount), 0), 0);
+
+            for (const b of allBranchesData) {
+                const bRev = b.orders.reduce((s, o) => s + Number(o.totalAmount), 0);
+                if (rule && bRev >= Number(rule.revenueThreshold)) {
+                    commission += bRev * (Number(rule.commissionPercent) / 100);
+                }
             }
+
+            totalRevenue = systemRevenue;
+            baseSalary = 6000000; // Default base salary for Marketing
+            actualReward = 0;
+
+        } else if (isTelesale) {
+            // TELESALE LOGIC
+            const systemRevenue = await this.prisma.order.aggregate({
+                where: { isPaymentConfirmed: true, confirmedAt: { gte: startDate, lte: endDate } },
+                _sum: { totalAmount: true }
+            });
+            const sysRev = Number(systemRevenue._sum.totalAmount || 0);
+            baseSalary = 6000000;
+            commission = sysRev * 0.002;
+            totalRevenue = sysRev;
+
+        } else if (isDriver) {
+            // DRIVER LOGIC
+            const driverDeliveries = await this.prisma.delivery.findMany({
+                where: { driverId: id, order: { isPaymentConfirmed: true, confirmedAt: { gte: startDate, lte: endDate } } }
+            });
+            shippingFee = driverDeliveries.reduce((s, d) => s + Number(d.deliveryFee || 0), 0);
+            totalOrders = driverDeliveries.length;
+            totalRevenue = shippingFee; // For drivers, their "revenue" is their shipping fees
+
+        } else if (isSale) {
+            // SALE LOGIC (Existing)
+            const salesRules = await this.prisma.salesSalaryRule.findMany({ orderBy: { targetRevenue: 'desc' } });
+            const splits = await this.prisma.orderSplit.findMany({
+                where: { employeeId: id, order: { isPaymentConfirmed: true, confirmedAt: { gte: startDate, lte: endDate } } },
+                include: { order: { include: { items: { include: { product: true } } } } }
+            });
+
+            const processedIds = new Set<string>();
+            for (const split of splits) {
+                const splitAmount = Number(split.splitAmount);
+                totalRevenue += splitAmount;
+                processedIds.add(split.orderId);
+
+                const order = split.order;
+                const shareRatio = splitAmount / Number(order.totalAmount || 1);
+
+                for (const item of order.items) {
+                    if (item.isBelowMin) lowPriceValue += Number(item.totalPrice) * shareRatio;
+                    if (item.product.isHighEnd) hotBonus += Number(item.saleBonusAmount) * item.quantity * shareRatio;
+                    commission += Number(item.totalPrice) * (item.isBelowMin ? 0.01 : 0.018) * shareRatio;
+                }
+            }
+            totalOrders = processedIds.size;
+
+            const achievedRule = salesRules.find(r => totalRevenue >= Number(r.targetRevenue));
+            if (achievedRule) {
+                baseReward = Number(achievedRule.bonusAmount);
+                baseSalary = employee.position === 'NVBH' ? 8000000 : Number(achievedRule.baseSalary);
+                milestone = Number(achievedRule.targetRevenue);
+            } else if (employee.position === 'NVBH') {
+                baseSalary = 8000000;
+            }
+
+            lowPriceRatio = totalRevenue > 0 ? (lowPriceValue / totalRevenue) : 0;
+            isPenalty = lowPriceRatio >= 0.2;
+            isClemency = !!achievedRule && totalRevenue >= Number(achievedRule.targetRevenue) * 1.1;
+            actualReward = isPenalty && !isClemency ? baseReward * 0.7 : baseReward;
+
+            const driverJobs = await this.prisma.delivery.findMany({
+                where: { driverId: id, order: { isPaymentConfirmed: true, confirmedAt: { gte: startDate, lte: endDate } } }
+            });
+            shippingFee = driverJobs.reduce((s, d) => s + Number(d.deliveryFee || 0), 0);
         }
 
         const netIncome = baseSalary + commission + hotBonus + shippingFee + actualReward;
 
         return {
-            totalOrders: processedOrders.size,
+            totalOrders,
             totalRevenue,
             lowPriceValue,
-            lowPriceRatio: ratio * 100,
-            milestone: isManager ? (await this.prisma.branchManagerSalaryRule.findFirst({
-                where: { branchId: employee.branchId, targetRevenue: { lte: totalRevenue } },
-                orderBy: { targetRevenue: 'desc' }
-            }))?.targetRevenue ?? 0 : (salaryRules.find(rule => totalRevenue >= Number(rule.targetRevenue))?.targetRevenue ?? 0),
+            lowPriceRatio: lowPriceRatio * 100,
+            milestone,
             baseReward,
             actualReward,
             hotBonus,
@@ -520,15 +520,18 @@ export class EmployeesService {
             shippingFee,
             baseSalary,
             netIncome,
+            branchTotalOrders,
+            branchTotalRevenue,
             isPenalty,
             isClemency
         };
     }
 
-    async getPerformanceReport(month: number, year: number) {
+    async getPerformanceReport(month: number, year: number, branchId?: string) {
         const employees = await this.prisma.employee.findMany({
             where: {
-                status: { not: 'Nghỉ việc' }
+                status: { not: 'Nghỉ việc' },
+                ...(branchId ? { branchId } : {})
             },
             include: { branch: true }
         });

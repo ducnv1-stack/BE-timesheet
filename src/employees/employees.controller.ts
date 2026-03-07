@@ -52,8 +52,9 @@ export class EmployeesController {
     getPerformanceReport(
         @Query('month') month: string,
         @Query('year') year: string,
+        @Query('branchId') branchId?: string,
     ) {
-        return this.employeesService.getPerformanceReport(parseInt(month), parseInt(year));
+        return this.employeesService.getPerformanceReport(parseInt(month), parseInt(year), branchId);
     }
 
     @Get(':id/performance')
