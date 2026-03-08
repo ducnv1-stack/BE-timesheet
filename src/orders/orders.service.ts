@@ -1009,44 +1009,113 @@ export class OrdersService {
         return logs;
     }
 
-    async addImages(orderId: string, imageUrls: string[]) {
+    async addImages(orderId: string, imageUrls: string[], userId: string) {
         const order = await this.prisma.order.findUnique({
             where: { id: orderId },
-            select: { images: true }
+            include: {
+                items: { include: { product: true } },
+                splits: { include: { employee: true, branch: true } },
+                payments: true,
+                branch: true,
+                deliveries: { include: { driver: true } },
+            }
         });
         if (!order) throw new NotFoundException('Order not found');
 
-        return this.prisma.order.update({
-            where: { id: orderId },
-            data: {
-                images: {
-                    push: imageUrls // PostgreSQL supports pushing to array
+        return this.prisma.$transaction(async (tx) => {
+            const updatedOrder = await tx.order.update({
+                where: { id: orderId },
+                data: {
+                    images: {
+                        push: imageUrls
+                    }
+                },
+                include: {
+                    items: { include: { product: true } },
+                    splits: { include: { employee: true, branch: true } },
+                    payments: true,
+                    branch: true,
+                    deliveries: { include: { driver: true } },
                 }
-            }
+            });
+
+            await tx.orderAuditLog.create({
+                data: {
+                    orderId: orderId,
+                    changedBy: userId,
+                    action: 'update',
+                    oldData: order as any,
+                    newData: updatedOrder as any,
+                },
+            });
+
+            return updatedOrder;
         });
     }
 
-    async removeImage(orderId: string, imageUrl: string) {
+    async removeImage(orderId: string, imageUrl: string, userId: string) {
         const order = await this.prisma.order.findUnique({
             where: { id: orderId },
-            select: { images: true }
+            include: {
+                items: { include: { product: true } },
+                splits: { include: { employee: true, branch: true } },
+                payments: true,
+                branch: true,
+                deliveries: { include: { driver: true } },
+            }
         });
         if (!order) throw new NotFoundException('Order not found');
 
         // Remove from DB array
         const updatedImages = order.images.filter(img => img !== imageUrl);
 
-        // Remove physical file
+        return this.prisma.$transaction(async (tx) => {
+            const updatedOrder = await tx.order.update({
+                where: { id: orderId },
+                data: { images: updatedImages },
+                include: {
+                    items: { include: { product: true } },
+                    splits: { include: { employee: true, branch: true } },
+                    payments: true,
+                    branch: true,
+                    deliveries: { include: { driver: true } },
+                }
+            });
+
+            await tx.orderAuditLog.create({
+                data: {
+                    orderId: orderId,
+                    changedBy: userId,
+                    action: 'update',
+                    oldData: order as any,
+                    newData: updatedOrder as any,
+                },
+            });
+
+            return updatedOrder;
+        });
+    }
+
+    async getSystemImages(orderId: string) {
+        const order = await this.prisma.order.findUnique({
+            where: { id: orderId },
+            select: { images: true }
+        });
+        if (!order) throw new NotFoundException('Order not found');
+
         const fs = require('fs');
         const path = require('path');
-        const imagePath = path.join(process.cwd(), 'public', imageUrl);
-        if (fs.existsSync(imagePath)) {
-            fs.unlinkSync(imagePath);
+        const dirPath = path.join(process.cwd(), 'public', 'uploads', 'orders');
+
+        let physicalFiles: string[] = [];
+        if (fs.existsSync(dirPath)) {
+            const files = fs.readdirSync(dirPath);
+            const orderFiles = files.filter((f: string) => f.startsWith(`${orderId}-`));
+            physicalFiles = orderFiles.map((f: string) => `/uploads/orders/${f}`);
         }
 
-        return this.prisma.order.update({
-            where: { id: orderId },
-            data: { images: updatedImages }
-        });
+        // Combine DB images and physical files, remove duplicates
+        const allImages = Array.from(new Set([...(order.images || []), ...physicalFiles]));
+        return allImages;
     }
 }

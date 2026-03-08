@@ -160,4 +160,9 @@ export class CreateOrderDto {
 
     @IsOptional()
     ward?: any;
+
+    @IsArray()
+    @IsOptional()
+    @IsString({ each: true })
+    images?: string[];
 }

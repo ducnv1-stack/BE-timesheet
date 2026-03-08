@@ -65,6 +65,11 @@ export class OrdersController {
         return this.ordersService.getAuditLogs(id);
     }
 
+    @Get(':id/system-images')
+    getSystemImages(@Param('id') id: string) {
+        return this.ordersService.getSystemImages(id);
+    }
+
     @Get(':id')
     findOne(@Param('id') id: string) {
         return this.ordersService.findOne(id);
@@ -133,24 +138,34 @@ export class OrdersController {
             }
         }),
         fileFilter: (req, file, cb) => {
-            if (!file.originalname.match(/\.(jpg|jpeg|png)$/)) {
+            if (!file.originalname.match(/\.(jpg|jpeg|png|webp|heic|heif)$/i)) {
                 return cb(new BadRequestException('Only image files are allowed!'), false);
             }
             cb(null, true);
         },
-        limits: { fileSize: 5 * 1024 * 1024 }
+        limits: { fileSize: 20 * 1024 * 1024 }
     }))
-    uploadImages(@Param('id') id: string, @UploadedFiles() files: Array<Express.Multer.File>) {
+    uploadImages(
+        @Param('id') id: string,
+        @Query('userId') userId: string,
+        @UploadedFiles() files: Array<Express.Multer.File>
+    ) {
+        if (!userId) throw new BadRequestException('userId is required for logging');
         if (!files || files.length === 0) {
             throw new BadRequestException('No files uploaded or file type is invalid');
         }
         const imageUrls = files.map(f => `/uploads/orders/${f.filename}`);
-        return this.ordersService.addImages(id, imageUrls);
+        return this.ordersService.addImages(id, imageUrls, userId);
     }
 
     @Delete(':id/images')
-    removeImage(@Param('id') id: string, @Query('imageUrl') imageUrl: string) {
+    removeImage(
+        @Param('id') id: string,
+        @Query('imageUrl') imageUrl: string,
+        @Query('userId') userId: string
+    ) {
         if (!imageUrl) throw new BadRequestException('imageUrl is required');
-        return this.ordersService.removeImage(id, imageUrl);
+        if (!userId) throw new BadRequestException('userId is required for logging');
+        return this.ordersService.removeImage(id, imageUrl, userId);
     }
 }
