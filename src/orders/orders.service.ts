@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
@@ -508,7 +508,10 @@ export class OrdersService {
             } else if (['DIRECTOR', 'CHIEF_ACCOUNTANT', 'ACCOUNTANT', 'BRANCH_ACCOUNTANT', 'MARKETING'].includes(roleCode)) {
                 // Global view - Only filter branch if explicitly provided
                 if (branchId && branchId !== 'all') {
-                    whereClause.branchId = branchId;
+                    whereClause.OR = [
+                        { branchId: branchId },
+                        { splits: { some: { branchId: branchId } } }
+                    ];
                 }
             }
         } else if (userId) {
@@ -976,6 +979,74 @@ export class OrdersService {
             });
 
             return updatedOrder;
+        });
+    }
+
+    async getAuditLogs(orderId: string) {
+        const logs = await this.prisma.orderAuditLog.findMany({
+            where: { orderId },
+            orderBy: { changedAt: 'desc' }
+        });
+
+        // Fetch order creator to include in oldData/newData if missing
+        const order = await this.prisma.order.findUnique({
+            where: { id: orderId },
+            include: { creator: { include: { employee: true } } }
+        });
+
+        if (order && order.creator) {
+            return logs.map(l => {
+                if (l.oldData && typeof l.oldData === 'object') {
+                    (l.oldData as any).creator = order.creator;
+                }
+                if (l.newData && typeof l.newData === 'object') {
+                    (l.newData as any).creator = order.creator;
+                }
+                return l;
+            });
+        }
+
+        return logs;
+    }
+
+    async addImages(orderId: string, imageUrls: string[]) {
+        const order = await this.prisma.order.findUnique({
+            where: { id: orderId },
+            select: { images: true }
+        });
+        if (!order) throw new NotFoundException('Order not found');
+
+        return this.prisma.order.update({
+            where: { id: orderId },
+            data: {
+                images: {
+                    push: imageUrls // PostgreSQL supports pushing to array
+                }
+            }
+        });
+    }
+
+    async removeImage(orderId: string, imageUrl: string) {
+        const order = await this.prisma.order.findUnique({
+            where: { id: orderId },
+            select: { images: true }
+        });
+        if (!order) throw new NotFoundException('Order not found');
+
+        // Remove from DB array
+        const updatedImages = order.images.filter(img => img !== imageUrl);
+
+        // Remove physical file
+        const fs = require('fs');
+        const path = require('path');
+        const imagePath = path.join(process.cwd(), 'public', imageUrl);
+        if (fs.existsSync(imagePath)) {
+            fs.unlinkSync(imagePath);
+        }
+
+        return this.prisma.order.update({
+            where: { id: orderId },
+            data: { images: updatedImages }
         });
     }
 }

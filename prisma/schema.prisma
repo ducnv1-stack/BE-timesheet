@@ -87,6 +87,7 @@ model Employee {
   email            String?
   socialInsuranceNumber String? @map("social_insurance_number")
   isInternalDriver Boolean  @default(false) @map("is_internal_driver")
+  avatarUrl        String?  @map("avatar_url") // Link ảnh đại diện
   createdAt        DateTime @default(now()) @map("created_at")
 
   user    User?    @relation(fields: [userId], references: [id])
@@ -126,6 +127,7 @@ model Order {
   confirmedAt        DateTime? @map("confirmed_at")
   updatedAt          DateTime @default(now()) @updatedAt @map("updated_at")
   createdAt          DateTime @default(now()) @map("created_at")
+  images             String[] @default([]) @map("images") // DS link ảnh biên lai, unc...
 
   // Added address fields
   provinceId         String?  @map("province_id") @db.Uuid

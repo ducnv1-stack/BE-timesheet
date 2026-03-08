@@ -5,7 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 export class DashboardService {
     constructor(private prisma: PrismaService) { }
 
-    async getDashboardData(userId: string, startDate?: string, endDate?: string) {
+    async getDashboardData(userId: string, startDate?: string, endDate?: string, branchId?: string) {
         const user = await this.prisma.user.findUnique({
             where: { id: userId },
             include: {
@@ -20,7 +20,7 @@ export class DashboardService {
             case 'DIRECTOR':
             case 'CHIEF_ACCOUNTANT':
             case 'ACCOUNTANT':
-                return this.getAccountingStats(undefined, startDate, endDate);
+                return this.getAccountingStats(branchId, startDate, endDate);
             case 'MANAGER':
                 return this.getManagerStats(user.employee?.branchId, startDate, endDate);
             case 'SALE':
@@ -256,7 +256,7 @@ export class DashboardService {
         });
 
         // Sort by revenue for Top chart
-        const topBranches = [...branchStats].sort((a, b) => b.revenue - a.revenue).slice(0, 5);
+        const topBranches = [...branchStats].sort((a, b) => b.revenue - a.revenue);
 
         // ===== Advanced Stats: Best Sellers & Revenue Trend (ALL SYSTEM) =====
         const reportOrders = await this.prisma.order.findMany({
@@ -288,6 +288,44 @@ export class DashboardService {
 
         const bestSellers = Array.from(productMap.values()).sort((a, b) => b.quantity - a.quantity).slice(0, 5);
         const revenueTrend = Array.from(trendMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+
+        // ===== Top 5 Sales Employees =====
+        const splitOrderWhere: any = {
+            isPaymentConfirmed: true,
+            confirmedAt: { gte: startDate, lte: endDate },
+            status: { notIn: ['canceled', 'rejected'] }
+        };
+
+        const topSalesSplits = await this.prisma.orderSplit.findMany({
+            where: {
+                order: splitOrderWhere,
+                ...(branchId ? { branchId } : {})
+            },
+            include: {
+                employee: {
+                    include: { branch: true }
+                }
+            }
+        });
+
+        const employeeRevMap = new Map();
+        topSalesSplits.forEach(split => {
+            if (!split.employee) return;
+            const empId = split.employeeId;
+            const current = employeeRevMap.get(empId) || {
+                id: empId,
+                name: split.employee.fullName || '',
+                position: split.employee.position || '',
+                branchName: split.employee.branch?.name || '',
+                revenue: 0,
+            };
+            current.revenue += Number(split.splitAmount);
+            employeeRevMap.set(empId, current);
+        });
+
+        const topEmployees = Array.from(employeeRevMap.values())
+            .sort((a, b) => b.revenue - a.revenue)
+            .slice(0, 5);
 
         return {
             role: 'DIRECTOR', // Keep for FE component matching
@@ -323,7 +361,8 @@ export class DashboardService {
                 ratio: s.lowPriceRatio
             })),
             bestSellers,
-            revenueTrend
+            revenueTrend,
+            topEmployees
         };
     }
 
@@ -371,6 +410,9 @@ export class DashboardService {
                         },
                         deliveries: true
                     }
+                },
+                employee: {
+                    include: { branch: true }
                 }
             }
         });
@@ -519,6 +561,26 @@ export class DashboardService {
         const bestSellers = Array.from(mgrProductMap.values()).sort((a, b) => b.quantity - a.quantity).slice(0, 5);
         const revenueTrend = Array.from(mgrTrendMap.values()).sort((a, b) => a.date.localeCompare(b.date));
 
+        // ===== Top 5 Sales Employees (Branch Specific) =====
+        const employeeRevMap = new Map();
+        branchOrders.forEach(split => {
+            if (!split.employee) return;
+            const empId = split.employeeId;
+            const current = employeeRevMap.get(empId) || {
+                id: empId,
+                name: split.employee.fullName || '',
+                position: split.employee.position || '',
+                branchName: '', // Managers know it's their branch, but keeping format consistent
+                revenue: 0,
+            };
+            current.revenue += Number(split.splitAmount);
+            employeeRevMap.set(empId, current);
+        });
+
+        const topEmployees = Array.from(employeeRevMap.values())
+            .sort((a, b) => b.revenue - a.revenue)
+            .slice(0, 5);
+
         // ========= 5. Phản hồi kết quả khi chưa đạt mốc doanh số tối thiểu =========
         if (!achievedRule) {
             return {
@@ -558,7 +620,8 @@ export class DashboardService {
                 netIncome: 0,
                 message: 'Chưa đạt mốc doanh số tối thiểu',
                 bestSellers,
-                revenueTrend
+                revenueTrend,
+                topEmployees
             };
         }
 
@@ -634,7 +697,8 @@ export class DashboardService {
             milestones: allMilestones,
             netIncome,
             bestSellers,
-            revenueTrend
+            revenueTrend,
+            topEmployees
         };
     }
 

@@ -1,4 +1,7 @@
-import { Controller, Get, Post, Body, Query, Param, Patch, Delete, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Body, Query, Param, Patch, Delete, BadRequestException, UseInterceptors, UploadedFiles } from '@nestjs/common';
+import { FilesInterceptor } from '@nestjs/platform-express';
+import { diskStorage } from 'multer';
+import { extname } from 'path';
 import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
@@ -57,6 +60,11 @@ export class OrdersController {
         return this.ordersService.confirmInvoice(id, userId);
     }
 
+    @Get(':id/audit-logs')
+    getAuditLogs(@Param('id') id: string) {
+        return this.ordersService.getAuditLogs(id);
+    }
+
     @Get(':id')
     findOne(@Param('id') id: string) {
         return this.ordersService.findOne(id);
@@ -112,5 +120,37 @@ export class OrdersController {
     ) {
         if (!userId) throw new BadRequestException('userId is required');
         return this.ordersService.remove(id, userId);
+    }
+
+    @Post(':id/images')
+    @UseInterceptors(FilesInterceptor('files', 10, {
+        storage: diskStorage({
+            destination: './public/uploads/orders',
+            filename: (req, file, cb) => {
+                const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+                const ext = extname(file.originalname);
+                cb(null, `${req.params.id}-${uniqueSuffix}${ext}`);
+            }
+        }),
+        fileFilter: (req, file, cb) => {
+            if (!file.originalname.match(/\.(jpg|jpeg|png)$/)) {
+                return cb(new BadRequestException('Only image files are allowed!'), false);
+            }
+            cb(null, true);
+        },
+        limits: { fileSize: 5 * 1024 * 1024 }
+    }))
+    uploadImages(@Param('id') id: string, @UploadedFiles() files: Array<Express.Multer.File>) {
+        if (!files || files.length === 0) {
+            throw new BadRequestException('No files uploaded or file type is invalid');
+        }
+        const imageUrls = files.map(f => `/uploads/orders/${f.filename}`);
+        return this.ordersService.addImages(id, imageUrls);
+    }
+
+    @Delete(':id/images')
+    removeImage(@Param('id') id: string, @Query('imageUrl') imageUrl: string) {
+        if (!imageUrl) throw new BadRequestException('imageUrl is required');
+        return this.ordersService.removeImage(id, imageUrl);
     }
 }

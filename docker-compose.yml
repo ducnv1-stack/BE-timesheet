@@ -39,8 +39,9 @@ services:
       dockerfile: Dockerfile
     container_name: nest_backend
     restart: unless-stopped
-    ports:
-      - "3001:3001"
+    # Không mở port 3001 ra ngoài nữa, Nginx sẽ làm việc này
+    volumes:
+      - ./uploads:/app/public/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -57,15 +58,30 @@ services:
       context: ./FE-Ohari
       dockerfile: Dockerfile
       args:
-        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+        # Quan trọng: Trỏ API về domain qua Nginx (HTTPS)
+        - NEXT_PUBLIC_API_URL=https://empire.ohari.jp/api
     container_name: next_frontend
     restart: unless-stopped
-    ports:
-      - "3000:3000"
+    # Không mở port 3000 ra ngoài nữa, Nginx sẽ làm việc này
     depends_on:
       - backend
     environment:
       - NODE_ENV=production
+
+  nginx:
+    image: nginx:alpine
+    container_name: nginx_proxy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    depends_on:
+      - frontend
+      - backend
 
 volumes:
   pg_data:

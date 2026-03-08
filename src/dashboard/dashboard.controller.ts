@@ -9,12 +9,13 @@ export class DashboardController {
     async getDashboard(
         @Query('userId') userId: string,
         @Query('startDate') startDate?: string,
-        @Query('endDate') endDate?: string
+        @Query('endDate') endDate?: string,
+        @Query('branchId') branchId?: string
     ) {
         if (!userId) {
             throw new UnauthorizedException('User ID is required');
         }
-        return this.dashboardService.getDashboardData(userId, startDate, endDate);
+        return this.dashboardService.getDashboardData(userId, startDate, endDate, branchId);
     }
 
     @Get('violated-orders')

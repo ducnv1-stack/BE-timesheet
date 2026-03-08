@@ -358,6 +358,7 @@ export class EmployeesService {
         // Common metrics
         let totalOrders = 0;
         let totalRevenue = 0;
+        let grossRevenue = 0; // Doanh số bán (chỉ xét ngày tạo)
         let lowPriceValue = 0;
         let lowPriceRatio = 0;
         let commission = 0;
@@ -382,6 +383,11 @@ export class EmployeesService {
         const branchTotalOrders = branchOrders.length;
         const branchTotalRevenue = branchOrders.reduce((sum, o) => sum + Number(o.totalAmount), 0);
 
+        const branchOrdersCreated = await this.prisma.order.findMany({
+            where: { branchId: employee.branchId, createdAt: { gte: startDate, lte: endDate } }
+        });
+        const branchGrossRevenue = branchOrdersCreated.reduce((sum, o) => sum + Number(o.totalAmount), 0);
+
         if (isManager) {
             // MANAGER LOGIC
             const rules = await this.prisma.branchManagerSalaryRule.findMany({
@@ -390,6 +396,7 @@ export class EmployeesService {
             });
 
             totalRevenue = branchTotalRevenue;
+            grossRevenue = branchGrossRevenue;
             totalOrders = branchTotalOrders;
 
             const achievedRule = rules.find(r => totalRevenue >= Number(r.targetRevenue));
@@ -429,6 +436,11 @@ export class EmployeesService {
 
             const systemRevenue = allBranchesData.reduce((sum, b) => sum + b.orders.reduce((s, o) => s + Number(o.totalAmount), 0), 0);
 
+            const systemGrossRevAgg = await this.prisma.order.aggregate({
+                where: { createdAt: { gte: startDate, lte: endDate } },
+                _sum: { totalAmount: true }
+            });
+
             for (const b of allBranchesData) {
                 const bRev = b.orders.reduce((s, o) => s + Number(o.totalAmount), 0);
                 if (rule && bRev >= Number(rule.revenueThreshold)) {
@@ -437,6 +449,7 @@ export class EmployeesService {
             }
 
             totalRevenue = systemRevenue;
+            grossRevenue = Number(systemGrossRevAgg._sum.totalAmount || 0);
             baseSalary = 6000000; // Default base salary for Marketing
             actualReward = 0;
 
@@ -446,10 +459,15 @@ export class EmployeesService {
                 where: { isPaymentConfirmed: true, confirmedAt: { gte: startDate, lte: endDate } },
                 _sum: { totalAmount: true }
             });
+            const systemGrossRev = await this.prisma.order.aggregate({
+                where: { createdAt: { gte: startDate, lte: endDate } },
+                _sum: { totalAmount: true }
+            });
             const sysRev = Number(systemRevenue._sum.totalAmount || 0);
             baseSalary = 6000000;
             commission = sysRev * 0.002;
             totalRevenue = sysRev;
+            grossRevenue = Number(systemGrossRev._sum.totalAmount || 0);
 
         } else if (isDriver) {
             // DRIVER LOGIC
@@ -459,6 +477,7 @@ export class EmployeesService {
             shippingFee = driverDeliveries.reduce((s, d) => s + Number(d.deliveryFee || 0), 0);
             totalOrders = driverDeliveries.length;
             totalRevenue = shippingFee; // For drivers, their "revenue" is their shipping fees
+            grossRevenue = shippingFee;
 
         } else if (isSale) {
             // SALE LOGIC (Existing)
@@ -467,6 +486,11 @@ export class EmployeesService {
                 where: { employeeId: id, order: { isPaymentConfirmed: true, confirmedAt: { gte: startDate, lte: endDate } } },
                 include: { order: { include: { items: { include: { product: true } } } } }
             });
+
+            const grossSplits = await this.prisma.orderSplit.findMany({
+                where: { employeeId: id, order: { createdAt: { gte: startDate, lte: endDate } } }
+            });
+            grossRevenue = grossSplits.reduce((sum, split) => sum + Number(split.splitAmount), 0);
 
             const processedIds = new Set<string>();
             for (const split of splits) {
@@ -509,6 +533,7 @@ export class EmployeesService {
 
         return {
             totalOrders,
+            grossRevenue,
             totalRevenue,
             lowPriceValue,
             lowPriceRatio: lowPriceRatio * 100,
@@ -551,5 +576,54 @@ export class EmployeesService {
             });
         }
         return report;
+    }
+
+    async updateAvatar(id: string, avatarUrl: string) {
+        const employee = await this.prisma.employee.findUnique({
+            where: { id }
+        });
+
+        if (!employee) {
+            throw new NotFoundException('Employee not found');
+        }
+
+        // Xóa ảnh cũ nếu có
+        if (employee.avatarUrl) {
+            const fs = require('fs');
+            const path = require('path');
+            const oldImagePath = path.join(process.cwd(), 'public', employee.avatarUrl);
+            if (fs.existsSync(oldImagePath)) {
+                fs.unlinkSync(oldImagePath);
+            }
+        }
+
+        return this.prisma.employee.update({
+            where: { id },
+            data: { avatarUrl }
+        });
+    }
+
+    async removeAvatar(id: string) {
+        const employee = await this.prisma.employee.findUnique({
+            where: { id }
+        });
+
+        if (!employee) {
+            throw new NotFoundException('Employee not found');
+        }
+
+        if (employee.avatarUrl) {
+            const fs = require('fs');
+            const path = require('path');
+            const imagePath = path.join(process.cwd(), 'public', employee.avatarUrl);
+            if (fs.existsSync(imagePath)) {
+                fs.unlinkSync(imagePath);
+            }
+        }
+
+        return this.prisma.employee.update({
+            where: { id },
+            data: { avatarUrl: null }
+        });
     }
 }

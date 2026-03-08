@@ -9,7 +9,13 @@ import {
     Param,
     Query,
     Req,
+    UseInterceptors,
+    UploadedFile,
+    BadRequestException,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { diskStorage } from 'multer';
+import { extname } from 'path';
 import { EmployeesService } from './employees.service';
 import { CreateEmployeeDto } from './dto/create-employee.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
@@ -64,6 +70,39 @@ export class EmployeesController {
         @Query('year') year: string,
     ) {
         return this.employeesService.getPerformanceStats(id, parseInt(month), parseInt(year));
+    }
+
+    @Post(':id/avatar')
+    @UseInterceptors(FileInterceptor('file', {
+        storage: diskStorage({
+            destination: './public/uploads/avatars',
+            filename: (req, file, cb) => {
+                const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+                const ext = extname(file.originalname);
+                cb(null, `${req.params.id}-${uniqueSuffix}${ext}`);
+            }
+        }),
+        fileFilter: (req, file, cb) => {
+            if (!file.originalname.match(/\.(jpg|jpeg|png)$/)) {
+                return cb(new BadRequestException('Only image files are allowed!'), false);
+            }
+            cb(null, true);
+        },
+        limits: {
+            fileSize: 5 * 1024 * 1024, // 5MB
+        }
+    }))
+    uploadAvatar(@Param('id') id: string, @UploadedFile() file: Express.Multer.File) {
+        if (!file) {
+            throw new BadRequestException('No file uploaded or file type is invalid');
+        }
+        const avatarUrl = `/uploads/avatars/${file.filename}`;
+        return this.employeesService.updateAvatar(id, avatarUrl);
+    }
+
+    @Delete(':id/avatar')
+    removeAvatar(@Param('id') id: string) {
+        return this.employeesService.removeAvatar(id);
     }
 
     @Get(':id')
