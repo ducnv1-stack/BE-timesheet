@@ -94,7 +94,13 @@ export class OrdersController {
         @Query('employeeId') employeeId?: string,
         @Query('lowPrice') lowPrice?: string,
         @Query('excludeInstallment') excludeInstallment?: string,
-        @Query('deliveryType') deliveryType?: string
+        @Query('deliveryType') deliveryType?: string,
+        @Query('editStartDate') editStartDate?: string,
+        @Query('editEndDate') editEndDate?: string,
+        @Query('editTimeFilter') editTimeFilter?: string,
+        @Query('confirmedStartDate') confirmedStartDate?: string,
+        @Query('confirmedEndDate') confirmedEndDate?: string,
+        @Query('confirmedTimeFilter') confirmedTimeFilter?: string
     ) {
         return this.ordersService.findAll(
             userId,
@@ -114,7 +120,13 @@ export class OrdersController {
             employeeId,
             lowPrice,
             excludeInstallment,
-            deliveryType
+            deliveryType,
+            editStartDate,
+            editEndDate,
+            editTimeFilter,
+            confirmedStartDate,
+            confirmedEndDate,
+            confirmedTimeFilter
         );
     }
 

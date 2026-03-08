@@ -245,9 +245,10 @@ export class DashboardService {
                 salesRevenue: branchSalesRevenue, // Doanh số bán
                 revenue,                           // Doanh số hoàn thành
                 pendingRevenue: Math.max(0, branchSalesRevenue - revenue), // Chờ thanh toán
-                orderCount: revenueOrders.length, // Đơn đã xác nhận
-                totalOrders: allOrdersInPeriod.length, // Tổng đơn phát sinh (bao gồm cả đơn chưa xác nhận)
-                salesOrderCount: allOrdersInPeriod.length,
+                completedOrderCount: revenueOrders.length, // Đơn đã xác nhận
+                salesOrderCount: allOrdersInPeriod.length, // Tổng đơn phát sinh
+                orderCount: revenueOrders.length, // BC: Đơn đã xác nhận
+                totalOrders: allOrdersInPeriod.length, // BC: Tổng đơn phát sinh
                 lowPriceRatio: revenueOrders.length > 0 ? Math.round((lowPriceOrders / revenueOrders.length) * 100) : 0,
                 unconfirmedOrders,
                 pendingInstallmentOrders,
@@ -278,12 +279,45 @@ export class DashboardService {
                 current.revenue += Number(item.totalPrice);
                 productMap.set(pName, current);
             });
+        });
 
-            // Trend (Adjust to GMT+7 before grouping by date)
-            const date = new Date(o.confirmedAt!.getTime() + 7 * 60 * 60 * 1000).toISOString().split('T')[0];
-            const currentTrend = trendMap.get(date) || { date, revenue: 0 };
-            currentTrend.revenue += Number(o.totalAmount);
-            trendMap.set(date, currentTrend);
+        // Revenue Trend (ALL SYSTEM) - Show both Sales (orderDate) and Completed (confirmedAt)
+        const allSystemOrders = await this.prisma.order.findMany({
+            where: {
+                status: { notIn: ['canceled', 'rejected'] },
+                ...(branchId ? { branchId } : {}),
+                OR: [
+                    { orderDate: { gte: startDate, lte: endDate } },
+                    {
+                        isPaymentConfirmed: true,
+                        confirmedAt: { gte: startDate, lte: endDate }
+                    }
+                ]
+            },
+            select: {
+                totalAmount: true,
+                orderDate: true,
+                isPaymentConfirmed: true,
+                confirmedAt: true
+            }
+        });
+
+        allSystemOrders.forEach(o => {
+            // 1. Sales Trend (by orderDate)
+            if (o.orderDate >= startDate && o.orderDate <= endDate) {
+                const sDate = new Date(o.orderDate.getTime() + 7 * 60 * 60 * 1000).toISOString().split('T')[0];
+                const sEntry = trendMap.get(sDate) || { date: sDate, salesRevenue: 0, revenue: 0 };
+                sEntry.salesRevenue += Number(o.totalAmount);
+                trendMap.set(sDate, sEntry);
+            }
+
+            // 2. Completed Trend (by confirmedAt)
+            if (o.isPaymentConfirmed && o.confirmedAt && o.confirmedAt >= startDate && o.confirmedAt <= endDate) {
+                const cDate = new Date(o.confirmedAt.getTime() + 7 * 60 * 60 * 1000).toISOString().split('T')[0];
+                const cEntry = trendMap.get(cDate) || { date: cDate, salesRevenue: 0, revenue: 0 };
+                cEntry.revenue += Number(o.totalAmount);
+                trendMap.set(cDate, cEntry);
+            }
         });
 
         const bestSellers = Array.from(productMap.values()).sort((a, b) => b.quantity - a.quantity).slice(0, 5);
@@ -548,13 +582,51 @@ export class DashboardService {
                 current.revenue += Number(item.totalPrice);
                 mgrProductMap.set(pName, current);
             });
+        });
 
-            // Trend (by confirmedAt date, adjusted to GMT+7)
-            if (o.confirmedAt) {
-                const date = new Date(o.confirmedAt.getTime() + 7 * 60 * 60 * 1000).toISOString().split('T')[0];
-                const currentTrend = mgrTrendMap.get(date) || { date, revenue: 0 };
-                currentTrend.revenue += Number(split.splitAmount);
-                mgrTrendMap.set(date, currentTrend);
+        // Revenue Trend (Branch Specific)
+        const branchTrendOrders = await this.prisma.orderSplit.findMany({
+            where: {
+                employee: { branchId },
+                order: {
+                    status: { notIn: ['canceled', 'rejected'] },
+                    OR: [
+                        { orderDate: { gte: startDate, lte: endDate } },
+                        {
+                            isPaymentConfirmed: true,
+                            confirmedAt: { gte: startDate, lte: endDate }
+                        }
+                    ]
+                }
+            },
+            include: {
+                order: {
+                    select: {
+                        totalAmount: true,
+                        orderDate: true,
+                        isPaymentConfirmed: true,
+                        confirmedAt: true
+                    }
+                }
+            }
+        });
+
+        branchTrendOrders.forEach(split => {
+            const o = split.order;
+            // 1. Sales Trend
+            if (o.orderDate >= startDate && o.orderDate <= endDate) {
+                const sDate = new Date(o.orderDate.getTime() + 7 * 60 * 60 * 1000).toISOString().split('T')[0];
+                const sEntry = mgrTrendMap.get(sDate) || { date: sDate, salesRevenue: 0, revenue: 0 };
+                sEntry.salesRevenue += Number(split.splitAmount);
+                mgrTrendMap.set(sDate, sEntry);
+            }
+
+            // 2. Completed Trend
+            if (o.isPaymentConfirmed && o.confirmedAt && o.confirmedAt >= startDate && o.confirmedAt <= endDate) {
+                const cDate = new Date(o.confirmedAt.getTime() + 7 * 60 * 60 * 1000).toISOString().split('T')[0];
+                const cEntry = mgrTrendMap.get(cDate) || { date: cDate, salesRevenue: 0, revenue: 0 };
+                cEntry.revenue += Number(split.splitAmount);
+                mgrTrendMap.set(cDate, cEntry);
             }
         });
 
@@ -727,7 +799,9 @@ export class DashboardService {
                     orderDate: { gte: startDate, lte: endDate }
                 }
             },
-            select: { splitAmount: true }
+            include: {
+                order: { select: { orderDate: true } }
+            }
         });
         const salesRevenue = salesSplits.reduce((sum, s) => sum + Number(s.splitAmount), 0);
         const salesOrderCount = salesSplits.length;
@@ -847,6 +921,11 @@ export class DashboardService {
                 return confirmedAt && confirmedAt >= p.start && confirmedAt <= p.end;
             }).reduce((sum, s) => sum + Number(s.splitAmount), 0);
 
+            const periodSalesRevenue = salesSplits.filter(s => {
+                const orderDate = s.order.orderDate;
+                return orderDate && orderDate >= p.start && orderDate <= p.end;
+            }).reduce((sum, s) => sum + Number(s.splitAmount), 0);
+
             const isUpcoming = now < p.start;
             const isOngoing = now >= p.start && now <= p.end;
             const isFinished = now > p.end;
@@ -864,6 +943,7 @@ export class DashboardService {
                 label: p.label,
                 startDate: p.start,
                 endDate: p.end,
+                salesRevenue: periodSalesRevenue,
                 revenue: periodRevenue,
                 target: periodTarget,
                 bonus,
@@ -940,6 +1020,16 @@ export class DashboardService {
 
         // 2. Calculate Basic Stats
         const systemRevenue = orders.reduce((sum, o) => sum + Number(o.totalAmount), 0);
+        // Doanh số bán toàn hệ thống
+        const systemSalesResult = await this.prisma.order.aggregate({
+            where: {
+                status: { notIn: ['canceled', 'rejected'] },
+                orderDate: { gte: startDate, lte: endDate }
+            },
+            _sum: { totalAmount: true }
+        });
+        const systemSalesRevenue = Number(systemSalesResult._sum.totalAmount || 0);
+
         // Đếm tổng đơn bao gồm cả đơn chưa xác nhận cho thống kê
         const totalOrderCount = await this.prisma.order.count({
             where: {
@@ -980,10 +1070,27 @@ export class DashboardService {
         const trendMap = new Map();
         orders.forEach(o => {
             const date = new Date(o.confirmedAt!.getTime() + 7 * 60 * 60 * 1000).toISOString().split('T')[0];
-            const current = trendMap.get(date) || { date, revenue: 0 };
+            const current = trendMap.get(date) || { date, revenue: 0, salesRevenue: 0 };
             current.revenue += Number(o.totalAmount);
             trendMap.set(date, current);
         });
+
+        // Add sales revenue to trend
+        const allSystemSales = await this.prisma.order.findMany({
+            where: {
+                status: { notIn: ['canceled', 'rejected'] },
+                orderDate: { gte: startDate, lte: endDate }
+            },
+            select: { orderDate: true, totalAmount: true }
+        });
+
+        allSystemSales.forEach(o => {
+            const date = new Date(o.orderDate.getTime() + 7 * 60 * 60 * 1000).toISOString().split('T')[0];
+            const current = trendMap.get(date) || { date, revenue: 0, salesRevenue: 0 };
+            current.salesRevenue += Number(o.totalAmount);
+            trendMap.set(date, current);
+        });
+
         const revenueTrend = Array.from(trendMap.values()).sort((a, b) => a.date.localeCompare(b.date));
 
         // 6. Source Breakdown
@@ -1000,7 +1107,9 @@ export class DashboardService {
         return {
             role: 'TELESALE',
             systemRevenue,
+            systemSalesRevenue,
             totalOrderCount,
+            completedOrderCount: orders.length,
             baseSalary,
             commission,
             netIncome: baseSalary + commission,

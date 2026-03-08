@@ -209,6 +209,20 @@ export class OrdersService {
             throw new BadRequestException(`Order ${id} not found`);
         }
 
+        const user = await this.prisma.user.findUnique({
+            where: { id: userId },
+            include: { role: true }
+        });
+
+        if (!user) {
+            throw new BadRequestException('User not found');
+        }
+
+        const canEditConfirmed = ['ADMIN', 'DIRECTOR', 'MANAGER', 'CHIEF_ACCOUNTANT', 'BRANCH_ACCOUNTANT', 'ACCOUNTANT'].includes(user.role.code);
+        if (originalOrder.isPaymentConfirmed && !canEditConfirmed) {
+            throw new BadRequestException('Đơn hàng đã được kế toán xác nhận, bạn không có quyền chỉnh sửa.');
+        }
+
         return this.prisma.$transaction(async (tx) => {
             let totalAmount = new Decimal(0);
             let calculatedProductBonusTotal = new Decimal(0);
@@ -479,7 +493,13 @@ export class OrdersService {
         employeeId?: string,
         lowPrice?: string,
         excludeInstallment?: string,
-        deliveryType?: string
+        deliveryType?: string,
+        editStartDate?: string,
+        editEndDate?: string,
+        editTimeFilter?: string,
+        confirmedStartDate?: string,
+        confirmedEndDate?: string,
+        confirmedTimeFilter?: string
     ) {
         let whereClause: any = {
             status: { notIn: ['canceled', 'rejected'] }
@@ -608,77 +628,126 @@ export class OrdersService {
             });
         }
 
-        if (startDate || endDate) {
-            const dateFilter: any = {};
-            if (startDate) {
-                const start = new Date(startDate);
-                start.setHours(0, 0, 0, 0);
-                dateFilter.gte = start;
+        if (editStartDate || editEndDate) {
+            const editDateFilter: any = {};
+            if (editStartDate) {
+                const parts = editStartDate.split('-').map(Number);
+                editDateFilter.gte = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2], 0, 0, 0) - 7 * 3600 * 1000);
             }
-            if (endDate) {
-                const end = new Date(endDate);
-                end.setHours(23, 59, 59, 999);
-                dateFilter.lte = end;
+            if (editEndDate) {
+                const parts = editEndDate.split('-').map(Number);
+                editDateFilter.lte = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2], 23, 59, 59, 999) - 7 * 3600 * 1000);
+            }
+            globalFilters.push({ updatedAt: editDateFilter });
+        } else if (editTimeFilter && editTimeFilter !== 'all') {
+            const now = new Date();
+            const vnTime = new Date(now.getTime() + 7 * 3600 * 1000);
+            const y = vnTime.getUTCFullYear();
+            const m = vnTime.getUTCMonth();
+            const d = vnTime.getUTCDate();
+
+            let startOfVNDayLocal = Date.UTC(y, m, d, 0, 0, 0);
+
+            if (editTimeFilter === 'today') {
+            } else if (editTimeFilter === 'week') {
+                const date = new Date(startOfVNDayLocal);
+                date.setUTCDate(date.getUTCDate() - 7);
+                startOfVNDayLocal = date.getTime();
+            } else if (editTimeFilter === 'month') {
+                const date = new Date(startOfVNDayLocal);
+                date.setUTCMonth(date.getUTCMonth() - 1);
+                startOfVNDayLocal = date.getTime();
             }
 
-            // Phân biệt logic lọc ngày:
-            // 1. Operational (Các tab Đợi...): Lấy tất cả đơn tồn đọng tính đến endDate
-            // 2. Reporting (Tab Tất cả / Báo cáo): Lấy theo logic tính doanh thu chuẩn của Dashboard
+            const utcStart = new Date(startOfVNDayLocal - 7 * 3600 * 1000);
+            globalFilters.push({ updatedAt: { gte: utcStart } });
+        }
+
+        if (confirmedStartDate || confirmedEndDate) {
+            const confirmedFilter: any = {};
+            if (confirmedStartDate) {
+                const parts = confirmedStartDate.split('-').map(Number);
+                confirmedFilter.gte = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2], 0, 0, 0) - 7 * 3600 * 1000);
+            }
+            if (confirmedEndDate) {
+                const parts = confirmedEndDate.split('-').map(Number);
+                confirmedFilter.lte = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2], 23, 59, 59, 999) - 7 * 3600 * 1000);
+            }
+            globalFilters.push({ confirmedAt: confirmedFilter });
+        } else if (confirmedTimeFilter && confirmedTimeFilter !== 'all') {
+            const now = new Date();
+            const vnTime = new Date(now.getTime() + 7 * 3600 * 1000);
+            const y = vnTime.getUTCFullYear();
+            const m = vnTime.getUTCMonth();
+            const d = vnTime.getUTCDate();
+
+            let startOfVNDayLocal = Date.UTC(y, m, d, 0, 0, 0);
+
+            if (confirmedTimeFilter === 'today') {
+            } else if (confirmedTimeFilter === 'week') {
+                const date = new Date(startOfVNDayLocal);
+                date.setUTCDate(date.getUTCDate() - 7);
+                startOfVNDayLocal = date.getTime();
+            } else if (confirmedTimeFilter === 'month') {
+                const date = new Date(startOfVNDayLocal);
+                date.setUTCMonth(date.getUTCMonth() - 1);
+                startOfVNDayLocal = date.getTime();
+            }
+
+            const utcStart = new Date(startOfVNDayLocal - 7 * 3600 * 1000);
+            globalFilters.push({ confirmedAt: { gte: utcStart } });
+        }
+
+        const partsStart = startDate ? startDate.split('-').map(Number) : null;
+        const partsEnd = endDate ? endDate.split('-').map(Number) : null;
+        const dateTimeFilter: any = {};
+
+        if (partsStart) {
+            // Use createdAt for consistency with the UI's "Ngày tạo" display
+            dateTimeFilter.gte = new Date(Date.UTC(partsStart[0], partsStart[1] - 1, partsStart[2], 0, 0, 0) - 7 * 3600 * 1000);
+        }
+        if (partsEnd) {
+            dateTimeFilter.lte = new Date(Date.UTC(partsEnd[0], partsEnd[1] - 1, partsEnd[2], 23, 59, 59, 999) - 7 * 3600 * 1000);
+        }
+
+        if (startDate || endDate) {
             const isOperational = tab === 'installment' || tab === 'invoice' ||
                 paymentStatus === 'pending' || invoiceStatus === 'pending';
 
             if (isOperational) {
-                globalFilters.push({ orderDate: { lte: dateFilter.lte } });
+                // Operational views: Still usually filter by all outstanding orders up to end date,
+                // but let's respect the start date if provided to avoid confusion.
+                const opFilter: any = { lte: dateTimeFilter.lte };
+                if (dateTimeFilter.gte) opFilter.gte = dateTimeFilter.gte;
+                globalFilters.push({ createdAt: opFilter });
             } else {
-                globalFilters.push({
-                    OR: [
-                        {
-                            payments: { none: { paymentMethod: 'INSTALLMENT' } },
-                            orderDate: dateFilter
-                        },
-                        {
-                            payments: { some: { paymentMethod: 'INSTALLMENT' } },
-                            isPaymentConfirmed: true,
-                            confirmedAt: dateFilter
-                        },
-                        {
-                            // Include pending installments in the date range so "All" tab shows all created orders
-                            payments: { some: { paymentMethod: 'INSTALLMENT' } },
-                            isPaymentConfirmed: false,
-                            orderDate: dateFilter
-                        }
-                    ]
-                });
+                // For the main order listing, users expect the filter to apply to the creation date they see.
+                // We no longer alternate between createdAt and confirmedAt here to keep the list predictable.
+                globalFilters.push({ createdAt: dateTimeFilter });
             }
         } else if (timeFilter && timeFilter !== 'all') {
             const now = new Date();
-            let start = new Date();
+            const vnTime = new Date(now.getTime() + 7 * 3600 * 1000);
+            const y = vnTime.getUTCFullYear();
+            const m = vnTime.getUTCMonth();
+            const d = vnTime.getUTCDate();
+
+            const startOfVNDayLocal = Date.UTC(y, m, d, 0, 0, 0);
+            let filterStart = startOfVNDayLocal;
+
             if (timeFilter === 'today') {
-                start.setHours(0, 0, 0, 0);
             } else if (timeFilter === 'week') {
-                start.setDate(now.getDate() - 7);
+                const date = new Date(startOfVNDayLocal);
+                date.setUTCDate(date.getUTCDate() - 7);
+                filterStart = date.getTime();
             } else if (timeFilter === 'month') {
-                start.setMonth(now.getMonth() - 1);
+                const date = new Date(startOfVNDayLocal);
+                date.setUTCMonth(date.getUTCMonth() - 1);
+                filterStart = date.getTime();
             }
-            const dashboardTimeFilter = {
-                OR: [
-                    {
-                        payments: { none: { paymentMethod: 'INSTALLMENT' } },
-                        orderDate: { gte: start }
-                    },
-                    {
-                        payments: { some: { paymentMethod: 'INSTALLMENT' } },
-                        isPaymentConfirmed: true,
-                        confirmedAt: { gte: start }
-                    },
-                    {
-                        payments: { some: { paymentMethod: 'INSTALLMENT' } },
-                        isPaymentConfirmed: false,
-                        orderDate: { gte: start }
-                    }
-                ]
-            };
-            globalFilters.push(dashboardTimeFilter);
+
+            const dateTimeGte = new Date(filterStart - 7 * 3600 * 1000);
+            globalFilters.push({ createdAt: { gte: dateTimeGte } });
         }
 
         // 3. Tab Specific Filter
@@ -767,7 +836,7 @@ export class OrdersService {
                     status: { notIn: ['canceled', 'rejected'] },
                     payments: { some: { paymentMethod: 'INSTALLMENT' } },
                     isPaymentConfirmed: false,
-                    orderDate: { lte: endDate ? new Date(endDate) : undefined }
+                    createdAt: { lte: dateTimeFilter.lte }
                 }
             }),
 
@@ -777,7 +846,7 @@ export class OrdersService {
                     branchId: branchId && branchId !== 'all' ? branchId : whereClause.branchId,
                     status: { notIn: ['canceled', 'rejected'] },
                     isInvoiceIssued: false,
-                    orderDate: { lte: endDate ? new Date(endDate) : undefined }
+                    createdAt: { lte: dateTimeFilter.lte }
                 }
             })
         ]);
@@ -988,25 +1057,34 @@ export class OrdersService {
             orderBy: { changedAt: 'desc' }
         });
 
+        // Fetch users to include names in logs
+        const userIds = [...new Set(logs.map(l => l.changedBy))];
+        const users = await this.prisma.user.findMany({
+            where: { id: { in: userIds } },
+            include: { employee: true }
+        });
+
         // Fetch order creator to include in oldData/newData if missing
         const order = await this.prisma.order.findUnique({
             where: { id: orderId },
             include: { creator: { include: { employee: true } } }
         });
 
-        if (order && order.creator) {
-            return logs.map(l => {
+        return logs.map(l => {
+            const changedByUser = users.find(u => u.id === l.changedBy);
+            if (order && order.creator) {
                 if (l.oldData && typeof l.oldData === 'object') {
                     (l.oldData as any).creator = order.creator;
                 }
                 if (l.newData && typeof l.newData === 'object') {
                     (l.newData as any).creator = order.creator;
                 }
-                return l;
-            });
-        }
-
-        return logs;
+            }
+            return {
+                ...l,
+                changedByUser
+            };
+        });
     }
 
     async addImages(orderId: string, imageUrls: string[], userId: string) {
