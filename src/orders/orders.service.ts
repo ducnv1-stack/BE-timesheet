@@ -1097,12 +1097,6 @@ export class OrdersService {
     }
 
     async getSystemImages(orderId: string) {
-        const order = await this.prisma.order.findUnique({
-            where: { id: orderId },
-            select: { images: true }
-        });
-        if (!order) throw new NotFoundException('Order not found');
-
         const fs = require('fs');
         const path = require('path');
         const dirPath = path.join(process.cwd(), 'public', 'uploads', 'orders');
@@ -1110,12 +1104,18 @@ export class OrdersService {
         let physicalFiles: string[] = [];
         if (fs.existsSync(dirPath)) {
             const files = fs.readdirSync(dirPath);
-            const orderFiles = files.filter((f: string) => f.startsWith(`${orderId}-`));
-            physicalFiles = orderFiles.map((f: string) => `/uploads/orders/${f}`);
+            // Lọc ra các file ảnh hợp lệ
+            const validFiles = files.filter((f: string) => f.match(/\.(jpg|jpeg|png|webp|heic|heif)$/i));
+
+            // Lấy thêm thông tin để sắp xếp mới nhất lên đầu (tùy chọn)
+            const fileStats = validFiles.map((f: string) => ({
+                name: f,
+                time: fs.statSync(path.join(dirPath, f)).mtime.getTime()
+            })).sort((a: any, b: any) => b.time - a.time).slice(0, 200); // Lấy tối đa 200 ảnh mới nhất
+
+            physicalFiles = fileStats.map((f: any) => `/uploads/orders/${f.name}`);
         }
 
-        // Combine DB images and physical files, remove duplicates
-        const allImages = Array.from(new Set([...(order.images || []), ...physicalFiles]));
-        return allImages;
+        return physicalFiles;
     }
 }
