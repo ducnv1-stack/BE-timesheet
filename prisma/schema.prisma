@@ -28,6 +28,7 @@ model Branch {
   orders                Order[]
   orderSplits           OrderSplit[]
   managerSalaryRules    BranchManagerSalaryRule[]
+  deliveryFeeRules      DeliveryFeeRule[]
   
   // 🆕 Relations cho chấm công
   attendances           Attendance[]
@@ -497,4 +498,18 @@ model MonthlyAttendanceSummary {
 
   @@unique([employeeId, month, year])
   @@map("monthly_attendance_summaries")
+}
+
+// 🚚 delivery_fee_rules – Quy tắc phí ship
+model DeliveryFeeRule {
+  id               String   @id @default(uuid()) @db.Uuid
+  branchId         String?  @map("branch_id") @db.Uuid
+  deliveryCategory String   @map("delivery_category")
+  feeAmount        Decimal  @map("fee_amount") @db.Decimal(20, 2)
+  isActive         Boolean  @default(true) @map("is_active")
+
+  branch  Branch?  @relation(fields: [branchId], references: [id])
+
+  @@unique([branchId, deliveryCategory])
+  @@map("delivery_fee_rules")
 }

@@ -1,7 +1,9 @@
 import { Controller, Get, Post, Body, Query, Param, Patch, Delete, BadRequestException, UseInterceptors, UploadedFiles } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
-import { extname } from 'path';
+import { extname, parse, join } from 'path';
+import sharp from 'sharp';
+import * as fs from 'fs/promises';
 import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
@@ -166,7 +168,39 @@ export class OrdersController {
         if (!files || files.length === 0) {
             throw new BadRequestException('No files uploaded or file type is invalid');
         }
-        const imageUrls = files.map(f => `/uploads/orders/${f.filename}`);
+
+        // We handle image processing efficiently by mapping mapping the files
+        // and using sharp to convert them to webp and resize
+        return this.processAndAddImages(id, files, userId);
+    }
+
+    private async processAndAddImages(id: string, files: Array<Express.Multer.File>, userId: string) {
+        const imageUrls: string[] = [];
+
+        for (const file of files) {
+            const filenameWithoutExt = parse(file.filename).name;
+            const newFilename = `${filenameWithoutExt}.webp`;
+            const newFilePath = join('./public/uploads/orders', newFilename);
+
+            try {
+                await sharp(file.path)
+                    .resize({ width: 1920, withoutEnlargement: true })
+                    .webp({ quality: 80 })
+                    .toFile(newFilePath);
+
+                // Delete original file if it wasn't already a webp that we replaced
+                if (file.path !== newFilePath) {
+                    await fs.unlink(file.path);
+                }
+
+                imageUrls.push(`/uploads/orders/${newFilename}`);
+            } catch (error) {
+                console.error(`Error processing image ${file.filename}:`, error);
+                // Fallback to original file
+                imageUrls.push(`/uploads/orders/${file.filename}`);
+            }
+        }
+
         return this.ordersService.addImages(id, imageUrls, userId);
     }
 

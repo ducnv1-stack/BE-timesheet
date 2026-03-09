@@ -15,7 +15,9 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
-import { extname } from 'path';
+import { extname, parse, join } from 'path';
+import sharp from 'sharp';
+import * as fs from 'fs/promises';
 import { EmployeesService } from './employees.service';
 import { CreateEmployeeDto } from './dto/create-employee.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
@@ -83,7 +85,7 @@ export class EmployeesController {
             }
         }),
         fileFilter: (req, file, cb) => {
-            if (!file.originalname.match(/\.(jpg|jpeg|png)$/)) {
+            if (!file.originalname.match(/\.(jpg|jpeg|png|webp|heic|heif)$/i)) {
                 return cb(new BadRequestException('Only image files are allowed!'), false);
             }
             cb(null, true);
@@ -92,11 +94,33 @@ export class EmployeesController {
             fileSize: 5 * 1024 * 1024, // 5MB
         }
     }))
-    uploadAvatar(@Param('id') id: string, @UploadedFile() file: Express.Multer.File) {
+    async uploadAvatar(@Param('id') id: string, @UploadedFile() file: Express.Multer.File) {
         if (!file) {
             throw new BadRequestException('No file uploaded or file type is invalid');
         }
-        const avatarUrl = `/uploads/avatars/${file.filename}`;
+
+        let avatarUrl = `/uploads/avatars/${file.filename}`;
+
+        try {
+            const filenameWithoutExt = parse(file.filename).name;
+            const newFilename = `${filenameWithoutExt}.webp`;
+            const newFilePath = join('./public/uploads/avatars', newFilename);
+
+            await sharp(file.path)
+                .resize({ width: 800, withoutEnlargement: true }) // Avatars don't need to be huge
+                .webp({ quality: 80 })
+                .toFile(newFilePath);
+
+            if (file.path !== newFilePath) {
+                await fs.unlink(file.path);
+            }
+
+            avatarUrl = `/uploads/avatars/${newFilename}`;
+        } catch (error) {
+            console.error(`Error processing avatar ${file.filename}:`, error);
+            // Fallback to original file
+        }
+
         return this.employeesService.updateAvatar(id, avatarUrl);
     }
 

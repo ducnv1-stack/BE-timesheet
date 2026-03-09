@@ -4,10 +4,14 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { Decimal } from '@prisma/client/runtime/library';
 import { Prisma } from '@prisma/client';
+import { DeliveryFeeRulesService } from '../delivery-fee-rules/delivery-fee-rules.service';
 
 @Injectable()
 export class OrdersService {
-    constructor(private prisma: PrismaService) { }
+    constructor(
+        private prisma: PrismaService,
+        private deliveryFeeRulesService: DeliveryFeeRulesService,
+    ) { }
 
     async create(createOrderDto: CreateOrderDto, userId: string) {
         const { items, splits, payments, gifts, deliveries, ...orderData } = createOrderDto;
@@ -128,22 +132,17 @@ export class OrdersService {
                         })),
                     },
                     deliveries: (deliveries && deliveries.length > 0) ? {
-                        create: deliveries.map((d: any) => {
-                            let fee = 0;
-                            if (d.category === 'COMPANY_DRIVER') fee = 50000;
-                            else if (d.category === 'EXTERNAL_DRIVER') fee = 0;
-                            else if (d.category === 'STAFF_DELIVERER') fee = 70000;
-                            else if (d.category === 'SELLING_SALE') fee = 100000;
-                            else if (d.category === 'OTHER_SALE') fee = 200000;
+                        create: await Promise.all(deliveries.map(async (d: any) => {
+                            const fee = await this.deliveryFeeRulesService.getDeliveryFee(d.category, orderData.branchId);
 
                             return {
                                 driverId: d.driverId || null,
-                                driverType: d.category, // map to legacy field just in case
+                                driverType: d.category,
                                 category: d.category,
                                 role: (d.category === 'COMPANY_DRIVER' || d.category === 'EXTERNAL_DRIVER') ? 'DRIVER' : 'STAFF',
                                 deliveryFee: d.deliveryFee !== undefined ? d.deliveryFee : fee,
                             };
-                        })
+                        }))
                     } : undefined,
                 },
             });
@@ -345,13 +344,8 @@ export class OrdersService {
                     } : undefined,
                     deliveries: (deliveries !== undefined) ? {
                         deleteMany: {},
-                        create: (deliveries || []).map((d: any) => {
-                            let fee = 0;
-                            if (d.category === 'COMPANY_DRIVER') fee = 50000;
-                            else if (d.category === 'EXTERNAL_DRIVER') fee = 0;
-                            else if (d.category === 'STAFF_DELIVERER') fee = 70000;
-                            else if (d.category === 'SELLING_SALE') fee = 100000;
-                            else if (d.category === 'OTHER_SALE') fee = 200000;
+                        create: await Promise.all((deliveries || []).map(async (d: any) => {
+                            const fee = await this.deliveryFeeRulesService.getDeliveryFee(d.category, orderData.branchId || originalOrder.branchId);
 
                             return {
                                 driverId: d.driverId || null,
@@ -360,7 +354,7 @@ export class OrdersService {
                                 role: (d.category === 'COMPANY_DRIVER' || d.category === 'EXTERNAL_DRIVER') ? 'DRIVER' : 'STAFF',
                                 deliveryFee: d.deliveryFee !== undefined ? d.deliveryFee : fee,
                             };
-                        })
+                        }))
                     } : undefined,
                 },
             });
