@@ -34,4 +34,21 @@ export class AttendanceController {
             parseInt(year)
         );
     }
+
+    @Get('summary')
+    async getSummary(
+        @Query('month') month: string,
+        @Query('year') year: string,
+        @Query('branchId') branchId?: string,
+        @Query('search') search?: string,
+        @Query('position') position?: string
+    ) {
+        return this.attendanceService.getMonthlySummary(
+            parseInt(month),
+            parseInt(year),
+            branchId,
+            search,
+            position
+        );
+    }
 }

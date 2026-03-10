@@ -260,4 +260,72 @@ export class AttendanceService {
             include: { shift: true },
         });
     }
+
+    // Lấy bảng tổng hợp công của nhiều nhân viên trong tháng
+    async getMonthlySummary(month: number, year: number, branchId?: string, search?: string, position?: string) {
+        const startDate = new Date(year, month - 1, 1);
+        const endDate = new Date(year, month, 0);
+
+        // 1. Lấy danh sách nhân viên thỏa mãn điều kiện (không nghỉ việc)
+        const employees = await this.prisma.employee.findMany({
+            where: {
+                status: { not: 'Nghỉ việc' },
+                ...(branchId ? { branchId } : {}),
+                ...(position ? { position } : {}),
+                ...(search ? {
+                    OR: [
+                        { fullName: { contains: search } },
+                        { phone: { contains: search } }
+                    ]
+                } : {})
+            },
+            select: {
+                id: true,
+                fullName: true,
+                phone: true,
+                position: true,
+                avatarUrl: true,
+                branch: { select: { name: true } }
+            },
+            orderBy: { fullName: 'asc' }
+        });
+
+        const employeeIds = employees.map(e => e.id);
+
+        // 2. Lấy dữ liệu chấm công của các nhân viên này trong tháng
+        const attendanceRecords = await this.prisma.attendance.findMany({
+            where: {
+                employeeId: { in: employeeIds },
+                date: {
+                    gte: startDate,
+                    lte: endDate,
+                },
+            }
+        });
+
+        // 3. Tính toán tổng kết cho từng nhân viên
+        const summary = employees.map(emp => {
+            const empAttendance = attendanceRecords.filter(a => a.employeeId === emp.id);
+
+            const totalWorkDays = empAttendance.filter(a => a.checkInTime).length;
+            const lateDays = empAttendance.filter(a => a.checkInStatus === 'LATE' || a.checkInStatus === 'LATE_SERIOUS').length;
+            const earlyLeaveDays = empAttendance.filter(a => a.checkOutStatus === 'EARLY_LEAVE').length;
+            const totalOvertimeMinutes = empAttendance.reduce((acc, a) => acc + (a.overtimeMinutes || 0), 0);
+
+            return {
+                employeeId: emp.id,
+                fullName: emp.fullName,
+                phone: emp.phone,
+                avatarUrl: emp.avatarUrl,
+                branchName: emp.branch.name,
+                position: emp.position,
+                totalWorkDays,
+                lateDays,
+                earlyLeaveDays,
+                totalOvertimeHours: (totalOvertimeMinutes / 60).toFixed(1)
+            };
+        });
+
+        return summary;
+    }
 }

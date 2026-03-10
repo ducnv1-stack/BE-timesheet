@@ -107,6 +107,15 @@ export class EmployeesService {
         });
     }
 
+    async getPositions() {
+        const result = await this.prisma.employee.findMany({
+            where: { position: { not: '' } },
+            select: { position: true },
+            distinct: ['position'],
+        });
+        return result.map(e => e.position).filter(p => p !== null && p !== '');
+    }
+
     async findOne(id: string) {
         const employee = await this.prisma.employee.findUnique({
             where: { id },
@@ -572,7 +581,8 @@ export class EmployeesService {
                 branchName: emp.branch?.name,
                 position: emp.position,
                 department: emp.department,
-                status: emp.status
+                status: emp.status,
+                avatarUrl: emp.avatarUrl
             });
         }
         return report;

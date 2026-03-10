@@ -406,8 +406,7 @@ export class DashboardService {
 
         // ===== Top 5 Sales Employees =====
         const splitOrderWhere: any = {
-            isPaymentConfirmed: true,
-            confirmedAt: { gte: startDate, lte: endDate },
+            createdAt: { gte: startDate, lte: endDate },
             status: { notIn: ['canceled', 'rejected'] }
         };
 
@@ -487,17 +486,26 @@ export class DashboardService {
 
         const { startDate, endDate } = this.getVNDateBounds(startStr, endStr);
 
+        const currentEmployees = await this.prisma.employee.findMany({
+            where: { branchId, status: 'active' },
+            select: { id: true }
+        });
+        const currentEmployeeIds = currentEmployees.map(e => e.id);
+
         // ========= 1a. DOANH SỐ BÁN chi nhánh — Tất cả đơn theo ngày tạo đơn (createdAt) =========
         // Lấy doanh thu từ tiền được chia (Split)
         const branchSalesSplits = await this.prisma.orderSplit.findMany({
             where: {
                 branchId,
+                employeeId: { in: currentEmployeeIds },
                 order: {
                     status: { notIn: ['canceled', 'rejected'] },
                     createdAt: { gte: startDate, lte: endDate }
                 }
             },
-            select: { splitAmount: true }
+            include: {
+                employee: { include: { branch: true } }
+            }
         });
         const branchSalesRevenue = branchSalesSplits.reduce((sum, s) => sum + Number(s.splitAmount), 0);
 
@@ -734,7 +742,7 @@ export class DashboardService {
 
         // ===== Top 5 Sales Employees (Branch Specific) =====
         const employeeRevMap = new Map();
-        branchOrders.forEach(split => {
+        branchSalesSplits.forEach(split => {
             if (!split.employee) return;
             const empId = split.employeeId;
             const current = employeeRevMap.get(empId) || {
@@ -1534,21 +1542,49 @@ export class DashboardService {
         const result: any = {};
 
         if (isFullList) {
-            const employeeIds = Array.from(new Set([
+            // Find all active employees with roles SALE or TELESALE
+            // and also any employee who had sales/completed orders in this period
+            const employeeIdsWithSplits = Array.from(new Set([
                 ...salesStats.employeeRanks.map(r => r.id),
                 ...completedStats.employeeRanks.map(r => r.id)
             ]));
 
             const employees = await this.prisma.employee.findMany({
-                where: { id: { in: employeeIds } },
+                where: {
+                    OR: [
+                        { id: { in: employeeIdsWithSplits } },
+                        {
+                            status: { not: 'Nghỉ việc' },
+                            user: {
+                                role: { code: { in: ['SALE'] } },
+                                isActive: true
+                            }
+                        }
+                    ]
+                },
                 include: { branch: true }
             });
 
             // Map results and filter by branchId if requested for the LIST view
             const mapEmp = (ranks: any[]) => {
-                let filtered = ranks;
+                const existingIds = new Set(ranks.map(r => r.id));
+                const fullList = [...ranks];
+
+                // Append employees who are in the target group but had no sales in this period
+                employees.forEach(emp => {
+                    if (!existingIds.has(emp.id)) {
+                        fullList.push({
+                            id: emp.id,
+                            amount: 0,
+                            rank: fullList.length + 1,
+                            branchRank: null
+                        });
+                    }
+                });
+
+                let filtered = fullList;
                 if (branchId) {
-                    filtered = ranks.filter(r => {
+                    filtered = fullList.filter(r => {
                         const emp = employees.find(e => e.id === r.id);
                         return emp?.branchId === branchId;
                     });
@@ -1558,7 +1594,8 @@ export class DashboardService {
                     return {
                         ...r,
                         name: emp?.fullName,
-                        branchName: emp?.branch?.name,
+                        position: emp?.position,
+                        branchName: (emp as any)?.branch?.name,
                         branchId: emp?.branchId,
                         avatarUrl: emp?.avatarUrl
                     };
