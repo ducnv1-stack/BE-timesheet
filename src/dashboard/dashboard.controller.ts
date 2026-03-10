@@ -18,6 +18,19 @@ export class DashboardController {
         return this.dashboardService.getDashboardData(userId, startDate, endDate, branchId);
     }
 
+    @Get('leaderboard')
+    async getLeaderboard(
+        @Query('userId') userId: string,
+        @Query('startDate') startDate?: string,
+        @Query('endDate') endDate?: string,
+        @Query('branchId') branchId?: string
+    ) {
+        if (!userId) {
+            throw new UnauthorizedException('User ID is required');
+        }
+        return this.dashboardService.getLeaderboardData(userId, startDate, endDate, branchId);
+    }
+
     @Get('violated-orders')
     async getViolatedOrders(
         @Query('userId') userId: string,

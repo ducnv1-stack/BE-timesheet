@@ -17,12 +17,13 @@ export class DashboardService {
         if (!user) return { error: 'User not found' };
 
         switch (user.role.code) {
+            case 'ADMIN':
             case 'DIRECTOR':
             case 'CHIEF_ACCOUNTANT':
             case 'ACCOUNTANT':
                 return this.getAccountingStats(branchId, startDate, endDate);
             case 'MANAGER':
-                return this.getManagerStats(user.employee?.branchId, startDate, endDate);
+                return this.getManagerStats(user.employee?.id, user.employee?.branchId, startDate, endDate);
             case 'SALE':
                 return this.getSaleStats(user.employee?.id, startDate, endDate);
             case 'TELESALE':
@@ -36,6 +37,33 @@ export class DashboardService {
             default:
                 return { message: 'Role not supported for dashboard yet' };
         }
+    }
+
+    async getLeaderboardData(userId: string, startStr?: string, endStr?: string, branchId?: string) {
+        const user = await this.prisma.user.findUnique({
+            where: { id: userId },
+            include: { role: true, employee: true }
+        });
+
+        if (!user) return { error: 'User not found' };
+
+        // Manager can only see their own branch
+        let effectiveBranchId = branchId;
+        if (user.role.code === 'MANAGER') {
+            effectiveBranchId = user.employee?.branchId;
+            if (!effectiveBranchId) return { error: 'No branch assigned to manager' };
+        }
+
+        const { startDate, endDate } = this.getVNDateBounds(startStr, endStr);
+
+        // Calculate all rankings
+        const rankings = await this.getRankings(undefined, effectiveBranchId, startDate, endDate, true);
+
+        return {
+            ...rankings,
+            userRole: user.role.code,
+            branchId: effectiveBranchId
+        };
     }
 
     private async getAccountingStats(branchId?: string, startStr?: string, endStr?: string) {
@@ -454,7 +482,7 @@ export class DashboardService {
         };
     }
 
-    private async getManagerStats(branchId?: string, startStr?: string, endStr?: string) {
+    private async getManagerStats(employeeId?: string, branchId?: string, startStr?: string, endStr?: string) {
         if (!branchId) return { error: 'No branch assigned' };
 
         const { startDate, endDate } = this.getVNDateBounds(startStr, endStr);
@@ -781,7 +809,8 @@ export class DashboardService {
                 message: 'Chưa đạt mốc doanh số tối thiểu',
                 bestSellers,
                 revenueTrend,
-                topEmployees
+                topEmployees,
+                ranking: await this.getRankings(employeeId, branchId, startDate, endDate)
             };
         }
 
@@ -859,7 +888,8 @@ export class DashboardService {
             netIncome,
             bestSellers,
             revenueTrend,
-            topEmployees
+            topEmployees,
+            ranking: await this.getRankings(employeeId, branchId, startDate, endDate)
         };
     }
 
@@ -1116,7 +1146,8 @@ export class DashboardService {
                 isPenalty,
                 isClemency
             },
-            kpiTarget: 200000000 // Base target 200tr
+            kpiTarget: 200000000, // Base target 200tr
+            ranking: await this.getRankings(employeeId, undefined, startDate, endDate)
         };
     }
 
@@ -1417,6 +1448,233 @@ export class DashboardService {
                 customerName: d.order.customerName
             }))
         };
+    }
+
+    private async getRankings(employeeId?: string, branchId?: string, startDate?: Date, endDate?: Date, isFullList = false) {
+        if (!startDate || !endDate) return null;
+
+        // 1. Get splits to calculate ranks
+        const whereSales: any = {
+            order: {
+                status: { notIn: ['canceled', 'rejected'] },
+                createdAt: { gte: startDate, lte: endDate }
+            }
+        };
+        const whereCompleted: any = {
+            order: {
+                status: { notIn: ['canceled', 'rejected'] },
+                isPaymentConfirmed: true,
+                confirmedAt: { gte: startDate, lte: endDate }
+            }
+        };
+
+        // Calculate rankings globally so "Top Server" rank is correct even for non-global views
+        // No longer filtering by branchId here.
+
+        const [salesSplits, completedSplits] = await Promise.all([
+            this.prisma.orderSplit.findMany({
+                where: whereSales,
+                select: { employeeId: true, splitAmount: true, branchId: true }
+            }),
+            this.prisma.orderSplit.findMany({
+                where: whereCompleted,
+                select: { employeeId: true, splitAmount: true, branchId: true }
+            })
+        ]);
+
+        const processRankMap = (splits: any[]) => {
+            const empMap = new Map<string, number>();
+            const branchMap = new Map<string, number>();
+            const empToMainBranch = new Map<string, string>(); // Track employee's branch from splits
+
+            splits.forEach(s => {
+                if (s.employeeId) {
+                    empMap.set(s.employeeId, (empMap.get(s.employeeId) || 0) + Number(s.splitAmount));
+                    if (s.branchId) empToMainBranch.set(s.employeeId, s.branchId);
+                }
+                if (s.branchId) {
+                    branchMap.set(s.branchId, (branchMap.get(s.branchId) || 0) + Number(s.splitAmount));
+                }
+            });
+
+            const empSorted = Array.from(empMap.entries()).sort((a, b) => b[1] - a[1]);
+            const branchSorted = Array.from(branchMap.entries()).sort((a, b) => b[1] - a[1]);
+
+            // Group employees by branch to calculate branch rank
+            const branchGroups = new Map<string, { id: string, amount: number }[]>();
+            empSorted.forEach(([id, amount]) => {
+                const bId = empToMainBranch.get(id) || 'unknown';
+                if (!branchGroups.has(bId)) branchGroups.set(bId, []);
+                branchGroups.get(bId)?.push({ id, amount });
+            });
+
+            const branchRankMap = new Map<string, number>(); // employeeId -> rank in its branch
+            branchGroups.forEach((emps) => {
+                // emps are already sorted by amount because they come from empSorted
+                emps.forEach((e, idx) => {
+                    branchRankMap.set(e.id, idx + 1);
+                });
+            });
+
+            return {
+                employeeRanks: empSorted.map(([id, amount], idx) => ({
+                    id,
+                    amount,
+                    rank: idx + 1,
+                    branchRank: branchRankMap.get(id) || null
+                })),
+                branchRanks: branchSorted.map(([id, amount], idx) => ({ id, amount, rank: idx + 1 })),
+                empToMainBranch
+            };
+        };
+
+        const salesStats = processRankMap(salesSplits);
+        const completedStats = processRankMap(completedSplits);
+
+        const result: any = {};
+
+        if (isFullList) {
+            const employeeIds = Array.from(new Set([
+                ...salesStats.employeeRanks.map(r => r.id),
+                ...completedStats.employeeRanks.map(r => r.id)
+            ]));
+
+            const employees = await this.prisma.employee.findMany({
+                where: { id: { in: employeeIds } },
+                include: { branch: true }
+            });
+
+            // Map results and filter by branchId if requested for the LIST view
+            const mapEmp = (ranks: any[]) => {
+                let filtered = ranks;
+                if (branchId) {
+                    filtered = ranks.filter(r => {
+                        const emp = employees.find(e => e.id === r.id);
+                        return emp?.branchId === branchId;
+                    });
+                }
+                return filtered.map(r => {
+                    const emp = employees.find(e => e.id === r.id);
+                    return {
+                        ...r,
+                        name: emp?.fullName,
+                        branchName: emp?.branch?.name,
+                        branchId: emp?.branchId,
+                        avatarUrl: emp?.avatarUrl
+                    };
+                });
+            };
+
+            result.employees = {
+                sales: mapEmp(salesStats.employeeRanks),
+                completed: mapEmp(completedStats.employeeRanks)
+            };
+
+            const branchIds = Array.from(new Set([
+                ...salesStats.branchRanks.map(r => r.id),
+                ...completedStats.branchRanks.map(r => r.id)
+            ]));
+
+            const branches = await this.prisma.branch.findMany({
+                where: { id: { in: branchIds } }
+            });
+
+            const mapBranch = (ranks: any[]) => {
+                let filtered = ranks;
+                if (branchId) {
+                    filtered = ranks.filter(r => r.id === branchId);
+                }
+                return filtered.map(r => {
+                    const br = branches.find(b => b.id === r.id);
+                    return { ...r, name: br?.name };
+                });
+            };
+
+            result.branches = {
+                sales: mapBranch(salesStats.branchRanks),
+                completed: mapBranch(completedStats.branchRanks)
+            };
+        }
+
+        if (employeeId) {
+            const sRankFull = salesStats.employeeRanks.find(r => r.id === employeeId);
+            const cRankFull = completedStats.employeeRanks.find(r => r.id === employeeId);
+
+            const branchIdOfEmp = salesStats.empToMainBranch.get(employeeId);
+            const branchEmpCount = Array.from(salesStats.empToMainBranch.values()).filter(id => id === branchIdOfEmp).length;
+
+            result.employee = {
+                sales: { rank: sRankFull?.rank || null, totalCount: salesStats.employeeRanks.length },
+                completed: { rank: cRankFull?.rank || null, totalCount: completedStats.employeeRanks.length },
+                branchSales: { rank: sRankFull?.branchRank || null, totalCount: branchEmpCount },
+                branchCompleted: { rank: cRankFull?.branchRank || null, totalCount: branchEmpCount }
+            };
+        }
+
+        if (branchId) {
+            const sRank = salesStats.branchRanks.find(r => r.id === branchId);
+            const cRank = completedStats.branchRanks.find(r => r.id === branchId);
+
+            result.branch = {
+                sales: { rank: sRank?.rank || null, totalCount: salesStats.branchRanks.length },
+                completed: { rank: cRank?.rank || null, totalCount: completedStats.branchRanks.length }
+            };
+
+            // Top performer in branch (Local rank)
+            const branchEmpSales = salesStats.employeeRanks
+                .filter(r => salesStats.empToMainBranch.get(r.id) === branchId)
+                .sort((a, b) => b.amount - a.amount);
+            const branchEmpCompleted = completedStats.employeeRanks
+                .filter(r => completedStats.empToMainBranch.get(r.id) === branchId)
+                .sort((a, b) => b.amount - a.amount);
+
+            const topStaffIds = Array.from(new Set([
+                branchEmpSales[0]?.id,
+                branchEmpCompleted[0]?.id
+            ].filter(id => !!id)));
+
+            const topStaffDetails = topStaffIds.length > 0
+                ? await this.prisma.employee.findMany({
+                    where: { id: { in: topStaffIds } }
+                })
+                : [];
+
+            const findDetail = (id: string) => topStaffDetails.find(e => e.id === id);
+
+            result.branchTopStaff = {
+                sales: branchEmpSales[0] ? {
+                    id: branchEmpSales[0].id,
+                    amount: branchEmpSales[0].amount,
+                    name: findDetail(branchEmpSales[0].id)?.fullName,
+                    avatarUrl: findDetail(branchEmpSales[0].id)?.avatarUrl
+                } : null,
+                completed: branchEmpCompleted[0] ? {
+                    id: branchEmpCompleted[0].id,
+                    amount: branchEmpCompleted[0].amount,
+                    name: findDetail(branchEmpCompleted[0].id)?.fullName,
+                    avatarUrl: findDetail(branchEmpCompleted[0].id)?.avatarUrl
+                } : null
+            };
+
+            // Top performers from this branch on Global Leaderboard (Server rank)
+            // Note: branchEmpSales are already part of global salesStats.employeeRanks
+            result.serverTopStaff = {
+                sales: branchEmpSales[0] ? {
+                    ...branchEmpSales[0],
+                    name: findDetail(branchEmpSales[0].id)?.fullName,
+                    avatarUrl: findDetail(branchEmpSales[0].id)?.avatarUrl,
+                    totalCount: salesStats.employeeRanks.length
+                } : null,
+                completed: branchEmpCompleted[0] ? {
+                    ...branchEmpCompleted[0],
+                    name: findDetail(branchEmpCompleted[0].id)?.fullName,
+                    avatarUrl: findDetail(branchEmpCompleted[0].id)?.avatarUrl,
+                    totalCount: completedStats.employeeRanks.length
+                } : null
+            };
+        }
+
+        return result;
     }
 
     private getVNDateBounds(startStr?: string, endStr?: string) {

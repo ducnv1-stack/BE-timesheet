@@ -519,7 +519,7 @@ export class OrdersService {
                         { splits: { some: { branchId: branchId } } }
                     ];
                 }
-            } else if (['DIRECTOR', 'CHIEF_ACCOUNTANT', 'ACCOUNTANT', 'BRANCH_ACCOUNTANT', 'MARKETING'].includes(roleCode)) {
+            } else if (['DIRECTOR', 'CHIEF_ACCOUNTANT', 'ACCOUNTANT', 'BRANCH_ACCOUNTANT', 'MARKETING', 'ADMIN'].includes(roleCode)) {
                 // Global view - Only filter branch if explicitly provided
                 if (branchId && branchId !== 'all') {
                     whereClause.OR = [
@@ -625,14 +625,16 @@ export class OrdersService {
         if (editStartDate || editEndDate) {
             const editDateFilter: any = {};
             if (editStartDate) {
-                const parts = editStartDate.split('-').map(Number);
-                editDateFilter.gte = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2], 0, 0, 0) - 7 * 3600 * 1000);
+                const date = new Date(editStartDate);
+                if (!isNaN(date.getTime())) editDateFilter.gte = date;
             }
             if (editEndDate) {
-                const parts = editEndDate.split('-').map(Number);
-                editDateFilter.lte = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2], 23, 59, 59, 999) - 7 * 3600 * 1000);
+                const date = new Date(editEndDate);
+                if (!isNaN(date.getTime())) editDateFilter.lte = date;
             }
-            globalFilters.push({ updatedAt: editDateFilter });
+            if (Object.keys(editDateFilter).length > 0) {
+                globalFilters.push({ updatedAt: editDateFilter });
+            }
         } else if (editTimeFilter && editTimeFilter !== 'all') {
             const now = new Date();
             const vnTime = new Date(now.getTime() + 7 * 3600 * 1000);
@@ -660,14 +662,16 @@ export class OrdersService {
         if (confirmedStartDate || confirmedEndDate) {
             const confirmedFilter: any = {};
             if (confirmedStartDate) {
-                const parts = confirmedStartDate.split('-').map(Number);
-                confirmedFilter.gte = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2], 0, 0, 0) - 7 * 3600 * 1000);
+                const date = new Date(confirmedStartDate);
+                if (!isNaN(date.getTime())) confirmedFilter.gte = date;
             }
             if (confirmedEndDate) {
-                const parts = confirmedEndDate.split('-').map(Number);
-                confirmedFilter.lte = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2], 23, 59, 59, 999) - 7 * 3600 * 1000);
+                const date = new Date(confirmedEndDate);
+                if (!isNaN(date.getTime())) confirmedFilter.lte = date;
             }
-            globalFilters.push({ confirmedAt: confirmedFilter });
+            if (Object.keys(confirmedFilter).length > 0) {
+                globalFilters.push({ confirmedAt: confirmedFilter });
+            }
         } else if (confirmedTimeFilter && confirmedTimeFilter !== 'all') {
             const now = new Date();
             const vnTime = new Date(now.getTime() + 7 * 3600 * 1000);
@@ -692,16 +696,15 @@ export class OrdersService {
             globalFilters.push({ confirmedAt: { gte: utcStart } });
         }
 
-        const partsStart = startDate ? startDate.split('-').map(Number) : null;
-        const partsEnd = endDate ? endDate.split('-').map(Number) : null;
         const dateTimeFilter: any = {};
 
-        if (partsStart) {
-            // Use createdAt for consistency with the UI's "Ngày tạo" display
-            dateTimeFilter.gte = new Date(Date.UTC(partsStart[0], partsStart[1] - 1, partsStart[2], 0, 0, 0) - 7 * 3600 * 1000);
+        if (startDate) {
+            const date = new Date(startDate);
+            if (!isNaN(date.getTime())) dateTimeFilter.gte = date;
         }
-        if (partsEnd) {
-            dateTimeFilter.lte = new Date(Date.UTC(partsEnd[0], partsEnd[1] - 1, partsEnd[2], 23, 59, 59, 999) - 7 * 3600 * 1000);
+        if (endDate) {
+            const date = new Date(endDate);
+            if (!isNaN(date.getTime())) dateTimeFilter.lte = date;
         }
 
         if (startDate || endDate) {
@@ -866,7 +869,7 @@ export class OrdersService {
         if (!user) throw new BadRequestException('User not found');
 
         const role = user.role.code;
-        if (!['DIRECTOR', 'CHIEF_ACCOUNTANT', 'ACCOUNTANT', 'BRANCH_ACCOUNTANT'].includes(role)) {
+        if (!['DIRECTOR', 'CHIEF_ACCOUNTANT', 'ACCOUNTANT', 'BRANCH_ACCOUNTANT', 'ADMIN'].includes(role)) {
             throw new BadRequestException('Unauthorized: Only Director, Chief Accountant or Accountant can delete orders');
         }
 

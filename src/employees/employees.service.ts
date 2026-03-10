@@ -26,7 +26,7 @@ export class EmployeesService {
 
         // Role-based visibility logic
         if (roleCode && userId) {
-            if (['DIRECTOR', 'CHIEF_ACCOUNTANT', 'ACCOUNTANT', 'BRANCH_ACCOUNTANT', 'HR'].includes(roleCode)) {
+            if (['DIRECTOR', 'CHIEF_ACCOUNTANT', 'ACCOUNTANT', 'BRANCH_ACCOUNTANT', 'HR', 'ADMIN'].includes(roleCode)) {
                 // Global: No forced filters, use query filters if provided
                 if (query.branchId) where.branchId = query.branchId;
             } else if (['MANAGER'].includes(roleCode)) {
@@ -64,7 +64,7 @@ export class EmployeesService {
 
         // Filter by account existence
         if (query.hasAccount === 'true') {
-            where.userId = roleCode && !['DIRECTOR', 'CHIEF_ACCOUNTANT', 'MANAGER', 'ACCOUNTANT', 'BRANCH_ACCOUNTANT', 'HR'].includes(roleCode)
+            where.userId = roleCode && !['DIRECTOR', 'CHIEF_ACCOUNTANT', 'MANAGER', 'ACCOUNTANT', 'BRANCH_ACCOUNTANT', 'HR', 'ADMIN'].includes(roleCode)
                 ? where.userId // Keep personal filter
                 : { not: null };
         } else if (query.hasAccount === 'false') {
