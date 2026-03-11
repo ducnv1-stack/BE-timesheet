@@ -36,7 +36,12 @@ export class OrdersService {
                     totalAmount = totalAmount.add(lineTotal);
 
                     // Logic Snapshot: Min Price & Bonus
-                    const isBelowMin = new Decimal(item.unitPrice).lt(product.minPrice);
+                    // Upgrade logic: if isUpgrade, check (unitPrice + oldOrderAmount) >= minPrice
+                    const effectivePrice = createOrderDto.isUpgrade 
+                        ? new Decimal(item.unitPrice).add(new Decimal(createOrderDto.oldOrderAmount || 0))
+                        : new Decimal(item.unitPrice);
+
+                    const isBelowMin = effectivePrice.lt(product.minPrice);
 
                     // Find applicable bonus
                     let bonusAmount = new Decimal(0);
@@ -45,7 +50,7 @@ export class OrdersService {
 
                     if (product.isHighEnd) {
                         const applicableRule = product.bonusRules.find(rule =>
-                            new Decimal(item.unitPrice).gte(rule.minSellPrice)
+                            effectivePrice.gte(rule.minSellPrice)
                         );
 
                         if (applicableRule) {
@@ -96,55 +101,74 @@ export class OrdersService {
             }
 
             // 2. Create Order
-            const order = await tx.order.create({
-                data: {
-                    ...orderData,
-                    totalAmount,
-                    giftAmount: totalGiftAmount,
-                    status: (deliveries && deliveries.length > 0) ? 'assigned' : 'pending',
-                    productBonusAmount: calculatedProductBonusTotal,
-                    createdBy: userId,
-                    provinceId: orderData.provinceId,
-                    wardId: orderData.wardId,
-                    orderDate: orderData.orderDate ? new Date(orderData.orderDate) : new Date(),
-                    customerCardIssueDate: (orderData.customerCardIssueDate && orderData.customerCardIssueDate.trim() !== '')
-                        ? new Date(orderData.customerCardIssueDate)
-                        : null,
-                    items: {
-                        create: itemProcessing,
-                    },
-                    gifts: gifts ? {
-                        create: giftProcessing,
-                    } : undefined,
-                    splits: {
-                        create: splits.map((s: any) => ({
-                            employeeId: s.employeeId,
-                            branchId: s.branchId,
-                            splitPercent: s.splitPercent,
-                            splitAmount: s.splitAmount !== undefined ? new Decimal(s.splitAmount) : totalAmount.mul(s.splitPercent).div(100),
-                        })),
-                    },
-                    payments: {
-                        create: payments.map((p: any) => ({
-                            paymentMethod: p.paymentMethod,
-                            amount: p.amount,
-                            paidAt: new Date(p.paidAt),
-                        })),
-                    },
-                    deliveries: (deliveries && deliveries.length > 0) ? {
-                        create: await Promise.all(deliveries.map(async (d: any) => {
-                            const fee = await this.deliveryFeeRulesService.getDeliveryFee(d.category, orderData.branchId);
-
-                            return {
-                                driverId: d.driverId || null,
-                                driverType: d.category,
-                                category: d.category,
-                                role: (d.category === 'COMPANY_DRIVER' || d.category === 'EXTERNAL_DRIVER') ? 'DRIVER' : 'STAFF',
-                                deliveryFee: d.deliveryFee !== undefined ? d.deliveryFee : fee,
-                            };
-                        }))
-                    } : undefined,
+            const dataToCreate: any = {
+                ...orderData,
+                totalAmount,
+                giftAmount: totalGiftAmount,
+                status: (deliveries && deliveries.length > 0) ? 'assigned' : 'pending',
+                productBonusAmount: calculatedProductBonusTotal,
+                createdBy: userId,
+                provinceId: orderData.provinceId,
+                wardId: orderData.wardId,
+                orderDate: orderData.orderDate ? new Date(orderData.orderDate) : new Date(),
+                customerCardIssueDate: (orderData.customerCardIssueDate && orderData.customerCardIssueDate.trim() !== '')
+                    ? new Date(orderData.customerCardIssueDate)
+                    : null,
+                // Upgrade fields
+                isUpgrade: orderData.isUpgrade || false,
+                oldOrderProductName: orderData.oldOrderProductName || null,
+                oldOrderAmount: orderData.oldOrderAmount !== undefined ? new Decimal(orderData.oldOrderAmount) : null,
+                oldOrderDate: orderData.oldOrderDate || null,
+                oldOrderCustomerName: orderData.oldOrderCustomerName || null,
+                oldOrderCustomerPhone: orderData.oldOrderCustomerPhone || null,
+                oldOrderCustomerAddress: orderData.oldOrderCustomerAddress || null,
+                oldOrderProvinceId: orderData.oldOrderProvinceId || null,
+                oldOrderWardId: orderData.oldOrderWardId || null,
+                oldOrderCustomerCardNumber: orderData.oldOrderCustomerCardNumber || null,
+                oldOrderCustomerCardIssueDate: orderData.oldOrderCustomerCardIssueDate || null,
+                oldOrderId: (orderData as any).oldOrderId || null,
+                oldOrderCode: (orderData as any).oldOrderCode || null,
+                items: {
+                    create: itemProcessing,
                 },
+                gifts: gifts ? {
+                    create: giftProcessing,
+                } : undefined,
+                splits: {
+                    create: splits.map((s: any) => ({
+                        employeeId: s.employeeId,
+                        branchId: s.branchId,
+                        splitPercent: s.splitPercent,
+                        splitAmount: s.splitAmount !== undefined ? new Decimal(s.splitAmount) : totalAmount.mul(s.splitPercent).div(100),
+                    })),
+                },
+                payments: {
+                    create: payments.map((p: any) => ({
+                        paymentMethod: p.paymentMethod,
+                        amount: p.amount,
+                        paidAt: new Date(p.paidAt),
+                    })),
+                },
+            };
+
+            if (deliveries && deliveries.length > 0) {
+                dataToCreate.deliveries = {
+                    create: await Promise.all(deliveries.map(async (d: any) => {
+                        const fee = await this.deliveryFeeRulesService.getDeliveryFee(d.category, orderData.branchId);
+
+                        return {
+                            driverId: d.driverId || null,
+                            driverType: d.category,
+                            category: d.category,
+                            role: (d.category === 'COMPANY_DRIVER' || d.category === 'EXTERNAL_DRIVER') ? 'DRIVER' : 'STAFF',
+                            deliveryFee: d.deliveryFee !== undefined ? d.deliveryFee : fee,
+                        };
+                    }))
+                };
+            }
+
+            const order = await tx.order.create({
+                data: dataToCreate,
             });
 
             // 3. Fetch full created state for log
@@ -716,11 +740,11 @@ export class OrdersService {
                 // but let's respect the start date if provided to avoid confusion.
                 const opFilter: any = { lte: dateTimeFilter.lte };
                 if (dateTimeFilter.gte) opFilter.gte = dateTimeFilter.gte;
-                globalFilters.push({ createdAt: opFilter });
+                globalFilters.push({ orderDate: opFilter });
             } else {
                 // For the main order listing, users expect the filter to apply to the creation date they see.
                 // We no longer alternate between createdAt and confirmedAt here to keep the list predictable.
-                globalFilters.push({ createdAt: dateTimeFilter });
+                globalFilters.push({ orderDate: dateTimeFilter });
             }
         } else if (timeFilter && timeFilter !== 'all') {
             const now = new Date();
@@ -743,8 +767,9 @@ export class OrdersService {
                 filterStart = date.getTime();
             }
 
-            const dateTimeGte = new Date(filterStart - 7 * 3600 * 1000);
-            globalFilters.push({ createdAt: { gte: dateTimeGte } });
+            // orderDate is a DATE column (no time), so use UTC midnight directly
+            const dateTimeGte = new Date(filterStart);
+            globalFilters.push({ orderDate: { gte: dateTimeGte } });
         }
 
         // 3. Tab Specific Filter
@@ -797,8 +822,9 @@ export class OrdersService {
                     confirmer: { include: { employee: true } },
                     province: true,
                     ward: true,
+                    upgradedFrom: { select: { id: true } },
                 },
-                orderBy: { createdAt: 'desc' },
+                orderBy: { orderDate: 'desc' },
                 skip,
                 take,
             }),

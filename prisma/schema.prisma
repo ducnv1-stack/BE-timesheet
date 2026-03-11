@@ -12,36 +12,42 @@ datasource db {
 
 // 🟦 branches – Chi nhánh
 model Branch {
-  id        String    @id @default(uuid()) @db.Uuid
-  code      String    @unique
+  id        String   @id @default(uuid()) @db.Uuid
+  code      String   @unique
   name      String
-  address   String?   @db.Text
-  createdAt DateTime  @default(now()) @map("created_at")
-  updatedAt DateTime  @updatedAt @map("updated_at")
+  address   String?  @db.Text
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   // 🆕 GPS cho chấm công
-  latitude       Float?     // Vĩ độ trung tâm chi nhánh
-  longitude      Float?     // Kinh độ trung tâm chi nhánh
-  checkinRadius  Int        @default(70) @map("checkin_radius") // Bán kính cho phép (mét)
+  latitude      Float? // Vĩ độ trung tâm chi nhánh
+  longitude     Float? // Kinh độ trung tâm chi nhánh
+  checkinRadius Int    @default(70) @map("checkin_radius") // Bán kính cho phép (mét)
 
-  employees             Employee[]
-  orders                Order[]
-  orderSplits           OrderSplit[]
-  managerSalaryRules    BranchManagerSalaryRule[]
-  deliveryFeeRules      DeliveryFeeRule[]
-  
+  employees          Employee[]
+  orders             Order[]
+  orderSplits        OrderSplit[]
+  managerSalaryRules BranchManagerSalaryRule[]
+  deliveryFeeRules   DeliveryFeeRule[]
+
   // 🆕 Relations cho chấm công
-  attendances           Attendance[]
-  workShifts            WorkShift[]
+  attendances Attendance[]
+  workShifts  WorkShift[]
 
   @@map("branches")
 }
 
 // 🟦 roles – Vai trò hệ thống
 model Role {
-  id    String @id @default(uuid()) @db.Uuid
-  code  String @unique // ADMIN, DIRECTOR, ACCOUNTANT_HQ, MANAGER, SALE, DRIVER...
-  name  String
+  id   String @id @default(uuid()) @db.Uuid
+  code String @unique // ADMIN, DIRECTOR, ACCOUNTANT_HQ, MANAGER, SALE, DRIVER...
+  name String
+
+  // 🆕 Cài đặt Lương mặc định theo Chức vụ
+  baseSalary          Decimal? @map("base_salary") @db.Decimal(20, 2)
+  diligentSalary      Decimal? @map("diligent_salary") @db.Decimal(20, 2)
+  allowance           Decimal? @map("allowance") @db.Decimal(20, 2)
+  standardWorkingDays Int?     @map("standard_working_days")
 
   users User[]
 
@@ -57,49 +63,56 @@ model User {
   isActive     Boolean  @default(true) @map("is_active")
   createdAt    DateTime @default(now()) @map("created_at")
 
-  role     Role      @relation(fields: [roleId], references: [id])
-  employee Employee?
-  ordersCreated Order[]
-  ordersConfirmed Order[] @relation("OrderConfirmer")
-  ordersIssuedInvoices Order[] @relation("OrderInvoiceIssuer")
+  role                 Role      @relation(fields: [roleId], references: [id])
+  employee             Employee?
+  ordersCreated        Order[]
+  ordersConfirmed      Order[]   @relation("OrderConfirmer")
+  ordersIssuedInvoices Order[]   @relation("OrderInvoiceIssuer")
 
   @@map("users")
 }
 
 // 🟦 employees – Nhân viên
 model Employee {
-  id               String   @id @default(uuid()) @db.Uuid
-  userId           String?  @unique @map("user_id") @db.Uuid
-  branchId         String   @map("branch_id") @db.Uuid
-  fullName         String   @map("full_name")
-  phone            String?
-  position         String // sale, manager, telesale, driver...
-  department       String?
-  birthday         DateTime? @db.Date
-  birthMonth       Int?     @map("birth_month")
-  gender           String?
-  status           String?   // Đang làm việc, Nghỉ việc...
-  workingType      String?   @map("working_type") // Hành chính, Full time...
-  joinDate         DateTime? @map("join_date") @db.Date
-  contractType     String?   @map("contract_type") // Hợp đồng 1 năm, Không xác định...
-  contractSigningDate DateTime? @map("contract_signing_date") @db.Date
-  idCardNumber     String?   @unique @map("id_card_number")
-  permanentAddress String?   @map("permanent_address") @db.Text
-  email            String?
-  socialInsuranceNumber String? @map("social_insurance_number")
-  isInternalDriver Boolean  @default(false) @map("is_internal_driver")
-  avatarUrl        String?  @map("avatar_url") // Link ảnh đại diện
-  createdAt        DateTime @default(now()) @map("created_at")
+  id                    String    @id @default(uuid()) @db.Uuid
+  userId                String?   @unique @map("user_id") @db.Uuid
+  branchId              String    @map("branch_id") @db.Uuid
+  fullName              String    @map("full_name")
+  phone                 String?
+  position              String // sale, manager, telesale, driver...
+  department            String?
+  birthday              DateTime? @db.Date
+  birthMonth            Int?      @map("birth_month")
+  gender                String?
+  status                String? // Đang làm việc, Nghỉ việc...
+  workingType           String?   @map("working_type") // Hành chính, Full time...
+  joinDate              DateTime? @map("join_date") @db.Date
+  contractType          String?   @map("contract_type") // Hợp đồng 1 năm, Không xác định...
+  contractSigningDate   DateTime? @map("contract_signing_date") @db.Date
+  idCardNumber          String?   @unique @map("id_card_number")
+  permanentAddress      String?   @map("permanent_address") @db.Text
+  email                 String?
+  socialInsuranceNumber String?   @map("social_insurance_number")
+  isInternalDriver      Boolean   @default(false) @map("is_internal_driver")
+  avatarUrl             String?   @map("avatar_url") // Link ảnh đại diện
 
-  user    User?    @relation(fields: [userId], references: [id])
-  branch  Branch  @relation(fields: [branchId], references: [id])
-  splits  OrderSplit[]
-  deliveries Delivery[]
+  // 🆕 Cài đặt Lương ngoại lệ cá nhân
+  customBaseSalary          Decimal? @map("custom_base_salary") @db.Decimal(20, 2)
+  customDiligentSalary      Decimal? @map("custom_diligent_salary") @db.Decimal(20, 2)
+  customAllowance           Decimal? @map("custom_allowance") @db.Decimal(20, 2)
+  customStandardWorkingDays Int?     @map("custom_standard_working_days")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user           User?                 @relation(fields: [userId], references: [id])
+  branch         Branch                @relation(fields: [branchId], references: [id])
+  splits         OrderSplit[]
+  deliveries     Delivery[]
   marketingRules MarketingSalaryRule[]
-  
+
   // 🆕 Relations cho chấm công
-  attendances              Attendance[]
-  leaveRequests            LeaveRequest[]
+  attendances                Attendance[]
+  leaveRequests              LeaveRequest[]
   monthlyAttendanceSummaries MonthlyAttendanceSummary[]
 
   @@map("employees")
@@ -107,70 +120,88 @@ model Employee {
 
 // 🟨 orders – Đơn hàng gốc
 model Order {
-  id                 String   @id @default(uuid()) @db.Uuid
-  branchId           String   @map("branch_id") @db.Uuid
-  customerName       String   @map("customer_name")
-  customerPhone      String   @map("customer_phone")
-  customerAddress    String?  @map("customer_address") @db.Text
-  customerCardNumber String?  @map("customer_card_number")
+  id                    String    @id @default(uuid()) @db.Uuid
+  branchId              String    @map("branch_id") @db.Uuid
+  customerName          String    @map("customer_name")
+  customerPhone         String    @map("customer_phone")
+  customerAddress       String?   @map("customer_address") @db.Text
+  customerCardNumber    String?   @map("customer_card_number")
   customerCardIssueDate DateTime? @map("customer_card_issue_date") @db.Date
-  staffCode          String?  @map("staff_code")
-  orderDate          DateTime @map("order_date") @db.Date
-  orderSource        String   @map("order_source") // hotline, fanpage, vãng lai, giới thiệu
-  status             String   @default("pending")  // pending, assigned, delivered, canceled
-  totalAmount        Decimal  @map("total_amount") @db.Decimal(20, 2)
-  giftAmount         Decimal  @default(0) @map("gift_amount") @db.Decimal(20, 2)
-  productBonusAmount Decimal  @default(0) @map("product_bonus_amount") @db.Decimal(20, 2)
-  note               String?  @db.Text
-  createdBy          String   @map("created_by") @db.Uuid
-  isPaymentConfirmed Boolean  @default(false) @map("is_payment_confirmed")
-  confirmedById      String?  @map("confirmed_by_id") @db.Uuid
-  confirmedAt        DateTime? @map("confirmed_at")
-  updatedAt          DateTime @default(now()) @updatedAt @map("updated_at")
-  createdAt          DateTime @default(now()) @map("created_at")
-  images             String[] @default([]) @map("images") // DS link ảnh biên lai, unc...
+  staffCode             String?   @map("staff_code")
+  orderDate             DateTime  @map("order_date") @db.Date
+  orderSource           String    @map("order_source") // hotline, fanpage, vãng lai, giới thiệu
+  status                String    @default("pending") // pending, assigned, delivered, canceled
+  totalAmount           Decimal   @map("total_amount") @db.Decimal(20, 2)
+  giftAmount            Decimal   @default(0) @map("gift_amount") @db.Decimal(20, 2)
+  productBonusAmount    Decimal   @default(0) @map("product_bonus_amount") @db.Decimal(20, 2)
+  note                  String?   @db.Text
+  createdBy             String    @map("created_by") @db.Uuid
+  isPaymentConfirmed    Boolean   @default(false) @map("is_payment_confirmed")
+  confirmedById         String?   @map("confirmed_by_id") @db.Uuid
+  confirmedAt           DateTime? @map("confirmed_at")
+  updatedAt             DateTime  @default(now()) @updatedAt @map("updated_at")
+  createdAt             DateTime  @default(now()) @map("created_at")
+  images                String[]  @default([]) @map("images") // DS link ảnh biên lai, unc...
+
+  // Upgrade logic fields
+  isUpgrade                     Boolean  @default(false) @map("is_upgrade")
+  oldOrderProductName           String?  @map("old_order_product_name")
+  oldOrderAmount                Decimal? @map("old_order_amount") @db.Decimal(20, 2)
+  oldOrderDate                  String?  @map("old_order_date")
+  oldOrderCustomerName          String?  @map("old_order_customer_name")
+  oldOrderCustomerPhone         String?  @map("old_order_customer_phone")
+  oldOrderCustomerAddress       String?  @map("old_order_customer_address")
+  oldOrderProvinceId            String?  @map("old_order_province_id") @db.Uuid
+  oldOrderWardId                String?  @map("old_order_ward_id") @db.Uuid
+  oldOrderCustomerCardNumber    String?  @map("old_order_customer_card_number")
+  oldOrderCustomerCardIssueDate String?  @map("old_order_customer_card_issue_date")
+  oldOrderId                    String?  @map("old_order_id") @db.Uuid
+  oldOrderCode                  String?  @map("old_order_code")
+
+  parentOrder  Order?  @relation("OrderUpgrades", fields: [oldOrderId], references: [id])
+  upgradedFrom Order[] @relation("OrderUpgrades")
 
   // Added address fields
-  provinceId         String?  @map("province_id") @db.Uuid
-  wardId             String?  @map("ward_id") @db.Uuid
+  provinceId String? @map("province_id") @db.Uuid
+  wardId     String? @map("ward_id") @db.Uuid
 
-  branch    Branch      @relation(fields: [branchId], references: [id])
-  creator   User        @relation(fields: [createdBy], references: [id])
-  confirmer User?       @relation("OrderConfirmer", fields: [confirmedById], references: [id])
-  province  Province?   @relation(fields: [provinceId], references: [id])
-  ward      Ward?       @relation(fields: [wardId], references: [id])
+  branch    Branch    @relation(fields: [branchId], references: [id])
+  creator   User      @relation(fields: [createdBy], references: [id])
+  confirmer User?     @relation("OrderConfirmer", fields: [confirmedById], references: [id])
+  province  Province? @relation(fields: [provinceId], references: [id])
+  ward      Ward?     @relation(fields: [wardId], references: [id])
 
   // VAT Invoice management
-  isInvoiceIssued    Boolean   @default(false) @map("is_invoice_issued")
-  invoiceIssuedAt     DateTime? @map("invoice_issued_at")
-  invoiceIssuedById   String?   @map("invoice_issued_by_id") @db.Uuid
-  invoiceIssuer       User?     @relation("OrderInvoiceIssuer", fields: [invoiceIssuedById], references: [id])
+  isInvoiceIssued   Boolean   @default(false) @map("is_invoice_issued")
+  invoiceIssuedAt   DateTime? @map("invoice_issued_at")
+  invoiceIssuedById String?   @map("invoice_issued_by_id") @db.Uuid
+  invoiceIssuer     User?     @relation("OrderInvoiceIssuer", fields: [invoiceIssuedById], references: [id])
 
-  items     OrderItem[]
-  splits    OrderSplit[]
-  payments  Payment[]
+  items      OrderItem[]
+  splits     OrderSplit[]
+  payments   Payment[]
   deliveries Delivery[]
-  gifts     OrderGift[]
-  auditLogs OrderAuditLog[]
+  gifts      OrderGift[]
+  auditLogs  OrderAuditLog[]
 
   @@map("orders")
 }
 
 // 🟨 order_items – Chi tiết sản phẩm
 model OrderItem {
-  id                  String  @id @default(uuid()) @db.Uuid
-  orderId             String  @map("order_id") @db.Uuid
-  productId           String  @map("product_id") @db.Uuid
-  quantity            Int
-  unitPrice           Decimal @map("unit_price") @db.Decimal(20, 2)
-  totalPrice          Decimal @map("total_price") @db.Decimal(20, 2)
-  
+  id         String  @id @default(uuid()) @db.Uuid
+  orderId    String  @map("order_id") @db.Uuid
+  productId  String  @map("product_id") @db.Uuid
+  quantity   Int
+  unitPrice  Decimal @map("unit_price") @db.Decimal(20, 2)
+  totalPrice Decimal @map("total_price") @db.Decimal(20, 2)
+
   // Snapshots for audit/salary
-  minPriceAtSale      Decimal @map("min_price_at_sale") @db.Decimal(20, 2)
-  isBelowMin          Boolean @map("is_below_min")
-  bonusAmount         Decimal @default(0) @map("bonus_amount") @db.Decimal(20, 2)
-  saleBonusAmount     Decimal @default(0) @map("sale_bonus_amount") @db.Decimal(20, 2)
-  managerBonusAmount  Decimal @default(0) @map("manager_bonus_amount") @db.Decimal(20, 2)
+  minPriceAtSale     Decimal @map("min_price_at_sale") @db.Decimal(20, 2)
+  isBelowMin         Boolean @map("is_below_min")
+  bonusAmount        Decimal @default(0) @map("bonus_amount") @db.Decimal(20, 2)
+  saleBonusAmount    Decimal @default(0) @map("sale_bonus_amount") @db.Decimal(20, 2)
+  managerBonusAmount Decimal @default(0) @map("manager_bonus_amount") @db.Decimal(20, 2)
 
   order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id])
@@ -214,24 +245,24 @@ model Delivery {
   driverId    String?  @map("driver_id") @db.Uuid
   driverType  String   @map("driver_type") // internal | external | sale (Legacy - will be replaced by category)
   role        String?  @default("DRIVER") // DRIVER | STAFF
-  category    String?  // COMPANY_DRIVER, EXTERNAL_DRIVER, STAFF_DELIVERER, SELLING_SALE, OTHER_SALE
+  category    String? // COMPANY_DRIVER, EXTERNAL_DRIVER, STAFF_DELIVERER, SELLING_SALE, OTHER_SALE
   deliveryFee Decimal  @map("delivery_fee") @db.Decimal(20, 2)
   createdAt   DateTime @default(now()) @map("created_at")
 
-  order    Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  driver   Employee? @relation(fields: [driverId], references: [id], onDelete: SetNull)
+  order  Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  driver Employee? @relation(fields: [driverId], references: [id], onDelete: SetNull)
 
   @@map("deliveries")
 }
 
 // 5.1 Bảng products
 model Product {
-  id         String   @id @default(uuid()) @db.Uuid
-  name       String
-  minPrice   Decimal  @map("min_price") @db.Decimal(20, 2)
-  isHighEnd  Boolean  @default(false) @map("is_high_end")
-  hotBonus   Decimal  @default(0) @map("hot_bonus") @db.Decimal(20, 2)
-  createdAt  DateTime @default(now()) @map("created_at")
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  minPrice  Decimal  @map("min_price") @db.Decimal(20, 2)
+  isHighEnd Boolean  @default(false) @map("is_high_end")
+  hotBonus  Decimal  @default(0) @map("hot_bonus") @db.Decimal(20, 2)
+  createdAt DateTime @default(now()) @map("created_at")
 
   orderItems OrderItem[]
   bonusRules ProductBonusRule[]
@@ -254,9 +285,9 @@ model Gift {
 
 // 🟩 order_gifts – Quà tặng trong đơn hàng
 model OrderGift {
-  id      String @id @default(uuid()) @db.Uuid
-  orderId String @map("order_id") @db.Uuid
-  giftId  String @map("gift_id") @db.Uuid
+  id       String @id @default(uuid()) @db.Uuid
+  orderId  String @map("order_id") @db.Uuid
+  giftId   String @map("gift_id") @db.Uuid
   quantity Int    @default(1)
 
   order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -339,7 +370,7 @@ model OrderAuditLog {
   id        String   @id @default(uuid()) @db.Uuid
   orderId   String   @map("order_id") @db.Uuid
   changedBy String   @map("changed_by") @db.Uuid
-  action    String   // create | update | delete
+  action    String // create | update | delete
   oldData   Json?    @map("old_data")
   newData   Json?    @map("new_data")
   changedAt DateTime @default(now()) @map("changed_at")
@@ -375,65 +406,65 @@ model Ward {
 
 // 🕒 work_shifts – Ca làm việc
 model WorkShift {
-  id             String   @id @default(uuid()) @db.Uuid
-  branchId       String   @map("branch_id") @db.Uuid
-  name           String   // "Ca hành chính", "Ca sáng", "Ca chiều"
-  startTime      String   @map("start_time")  // "08:00" (HH:mm)
-  endTime        String   @map("end_time")    // "17:30"
-  breakMinutes   Int      @default(0) @map("break_minutes") 
-  lateThreshold  Int      @default(15) @map("late_threshold") 
-  lateSeriousThreshold Int @default(30) @map("late_serious_threshold")
-  earlyLeaveThreshold  Int @default(15) @map("early_leave_threshold")
-  isActive       Boolean  @default(true) @map("is_active")
-  
-  branch         Branch   @relation(fields: [branchId], references: [id])
-  attendances    Attendance[]
-  
+  id                   String  @id @default(uuid()) @db.Uuid
+  branchId             String  @map("branch_id") @db.Uuid
+  name                 String // "Ca hành chính", "Ca sáng", "Ca chiều"
+  startTime            String  @map("start_time") // "08:00" (HH:mm)
+  endTime              String  @map("end_time") // "17:30"
+  breakMinutes         Int     @default(0) @map("break_minutes")
+  lateThreshold        Int     @default(15) @map("late_threshold")
+  lateSeriousThreshold Int     @default(30) @map("late_serious_threshold")
+  earlyLeaveThreshold  Int     @default(15) @map("early_leave_threshold")
+  isActive             Boolean @default(true) @map("is_active")
+
+  branch      Branch       @relation(fields: [branchId], references: [id])
+  attendances Attendance[]
+
   @@map("work_shifts")
 }
 
 // 📅 attendances – Bảng chấm công hàng ngày
 model Attendance {
-  id                 String    @id @default(uuid()) @db.Uuid
-  employeeId         String    @map("employee_id") @db.Uuid
-  branchId           String    @map("branch_id") @db.Uuid
-  shiftId            String?   @map("shift_id") @db.Uuid
-  date               DateTime  @db.Date
+  id         String   @id @default(uuid()) @db.Uuid
+  employeeId String   @map("employee_id") @db.Uuid
+  branchId   String   @map("branch_id") @db.Uuid
+  shiftId    String?  @map("shift_id") @db.Uuid
+  date       DateTime @db.Date
 
   // --- CHECK-IN ---
   checkInTime        DateTime? @map("check_in_time")
   checkInLatitude    Float?    @map("check_in_latitude")
   checkInLongitude   Float?    @map("check_in_longitude")
   checkInDistance    Float?    @map("check_in_distance")
-  checkInStatus      String?   @map("check_in_status") 
-  checkInMethod      String?   @map("check_in_method") 
+  checkInStatus      String?   @map("check_in_status")
+  checkInMethod      String?   @map("check_in_method")
   checkInAttempts    Int       @default(0) @map("check_in_attempts")
   maxCheckInAttempts Int       @default(3) @map("max_check_in_attempts")
 
   // --- CHECK-OUT ---
-  checkOutTime       DateTime? @map("check_out_time")
-  checkOutLatitude   Float?    @map("check_out_latitude")
-  checkOutLongitude  Float?    @map("check_out_longitude")
-  checkOutDistance   Float?    @map("check_out_distance")
-  checkOutStatus     String?   @map("check_out_status") 
-  checkOutMethod     String?   @map("check_out_method")
+  checkOutTime      DateTime? @map("check_out_time")
+  checkOutLatitude  Float?    @map("check_out_latitude")
+  checkOutLongitude Float?    @map("check_out_longitude")
+  checkOutDistance  Float?    @map("check_out_distance")
+  checkOutStatus    String?   @map("check_out_status")
+  checkOutMethod    String?   @map("check_out_method")
 
   // --- TỔNG KẾT ---
-  dailyStatus        String    @default("ABSENT_UNAPPROVED") @map("daily_status")
-  totalWorkMinutes   Int?      @map("total_work_minutes")
-  overtimeMinutes    Int?      @map("overtime_minutes")
-  lateMinutes        Int?      @map("late_minutes")
-  earlyLeaveMinutes  Int?      @map("early_leave_minutes")
+  dailyStatus       String @default("ABSENT_UNAPPROVED") @map("daily_status")
+  totalWorkMinutes  Int?   @map("total_work_minutes")
+  overtimeMinutes   Int?   @map("overtime_minutes")
+  lateMinutes       Int?   @map("late_minutes")
+  earlyLeaveMinutes Int?   @map("early_leave_minutes")
 
-  note               String?   @db.Text
-  isManualOverride   Boolean   @default(false) @map("is_manual_override")
-  approvedById       String?   @map("approved_by_id") @db.Uuid
-  createdAt          DateTime  @default(now()) @map("created_at")
-  updatedAt          DateTime  @updatedAt @map("updated_at")
+  note             String?  @db.Text
+  isManualOverride Boolean  @default(false) @map("is_manual_override")
+  approvedById     String?  @map("approved_by_id") @db.Uuid
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
 
-  employee           Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
-  branch             Branch    @relation(fields: [branchId], references: [id])
-  shift              WorkShift? @relation(fields: [shiftId], references: [id])
+  employee Employee   @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  branch   Branch     @relation(fields: [branchId], references: [id])
+  shift    WorkShift? @relation(fields: [shiftId], references: [id])
 
   @@unique([employeeId, date])
   @@index([employeeId, date])
@@ -445,56 +476,56 @@ model Attendance {
 model LeaveRequest {
   id           String    @id @default(uuid()) @db.Uuid
   employeeId   String    @map("employee_id") @db.Uuid
-  leaveType    String    @map("leave_type") 
+  leaveType    String    @map("leave_type")
   startDate    DateTime  @map("start_date") @db.Date
   endDate      DateTime  @map("end_date") @db.Date
   reason       String?   @db.Text
-  status       String    @default("PENDING") 
+  status       String    @default("PENDING")
   approvedById String?   @map("approved_by_id") @db.Uuid
   approvedAt   DateTime? @map("approved_at")
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
-  employee     Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
 
   @@map("leave_requests")
 }
 
 // ⚙️ overtime_configs – Cấu hình tăng ca
 model OvertimeConfig {
-  id                  String  @id @default(uuid()) @db.Uuid
-  name                String
-  overtimeType        String  @map("overtime_type") 
-  multiplier          Decimal @db.Decimal(3, 1) 
-  minOvertimeMinutes  Int     @default(30) @map("min_overtime_minutes")
-  maxOvertimeMinutes  Int     @default(240) @map("max_overtime_minutes")
-  isActive            Boolean @default(true) @map("is_active")
+  id                 String  @id @default(uuid()) @db.Uuid
+  name               String
+  overtimeType       String  @map("overtime_type")
+  multiplier         Decimal @db.Decimal(3, 1)
+  minOvertimeMinutes Int     @default(30) @map("min_overtime_minutes")
+  maxOvertimeMinutes Int     @default(240) @map("max_overtime_minutes")
+  isActive           Boolean @default(true) @map("is_active")
 
   @@map("overtime_configs")
 }
 
 // 📊 monthly_attendance_summaries – Tổng hợp công tháng
 model MonthlyAttendanceSummary {
-  id                  String   @id @default(uuid()) @db.Uuid
-  employeeId          String   @map("employee_id") @db.Uuid
-  month               Int
-  year                Int
-  
-  totalWorkDays       Int      @default(0) @map("total_work_days")
-  fullDays            Int      @default(0) @map("full_days")
-  halfDays            Int      @default(0) @map("half_days")
-  absentApproved      Int      @default(0) @map("absent_approved")
-  absentUnapproved    Int      @default(0) @map("absent_unapproved")
-  lateDays            Int      @default(0) @map("late_days")
-  totalLateMinutes    Int      @default(0) @map("total_late_minutes")
-  earlyLeaveDays      Int      @default(0) @map("early_leave_days")
-  totalOvertimeMinutes Int     @default(0) @map("total_overtime_minutes")
-  totalWorkMinutes    Int      @default(0) @map("total_work_minutes")
-  effectiveWorkDays   Decimal  @default(0) @map("effective_work_days") @db.Decimal(5, 1)
-  
-  updatedAt           DateTime @updatedAt @map("updated_at")
+  id         String @id @default(uuid()) @db.Uuid
+  employeeId String @map("employee_id") @db.Uuid
+  month      Int
+  year       Int
 
-  employee            Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  totalWorkDays        Int     @default(0) @map("total_work_days")
+  fullDays             Int     @default(0) @map("full_days")
+  halfDays             Int     @default(0) @map("half_days")
+  absentApproved       Int     @default(0) @map("absent_approved")
+  absentUnapproved     Int     @default(0) @map("absent_unapproved")
+  lateDays             Int     @default(0) @map("late_days")
+  totalLateMinutes     Int     @default(0) @map("total_late_minutes")
+  earlyLeaveDays       Int     @default(0) @map("early_leave_days")
+  totalOvertimeMinutes Int     @default(0) @map("total_overtime_minutes")
+  totalWorkMinutes     Int     @default(0) @map("total_work_minutes")
+  effectiveWorkDays    Decimal @default(0) @map("effective_work_days") @db.Decimal(5, 1)
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
 
   @@unique([employeeId, month, year])
   @@map("monthly_attendance_summaries")
@@ -502,13 +533,13 @@ model MonthlyAttendanceSummary {
 
 // 🚚 delivery_fee_rules – Quy tắc phí ship
 model DeliveryFeeRule {
-  id               String   @id @default(uuid()) @db.Uuid
-  branchId         String?  @map("branch_id") @db.Uuid
-  deliveryCategory String   @map("delivery_category")
-  feeAmount        Decimal  @map("fee_amount") @db.Decimal(20, 2)
-  isActive         Boolean  @default(true) @map("is_active")
+  id               String  @id @default(uuid()) @db.Uuid
+  branchId         String? @map("branch_id") @db.Uuid
+  deliveryCategory String  @map("delivery_category")
+  feeAmount        Decimal @map("fee_amount") @db.Decimal(20, 2)
+  isActive         Boolean @default(true) @map("is_active")
 
-  branch  Branch?  @relation(fields: [branchId], references: [id])
+  branch Branch? @relation(fields: [branchId], references: [id])
 
   @@unique([branchId, deliveryCategory])
   @@map("delivery_fee_rules")

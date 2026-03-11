@@ -328,4 +328,73 @@ export class AttendanceService {
 
         return summary;
     }
+
+    // ========== WORK SHIFT CRUD ==========
+
+    async getShifts(branchId?: string) {
+        return this.prisma.workShift.findMany({
+            where: branchId ? { branchId } : {},
+            include: { branch: { select: { id: true, name: true } } },
+            orderBy: [{ branch: { name: 'asc' } }, { name: 'asc' }]
+        });
+    }
+
+    async createShift(data: {
+        branchId: string;
+        name: string;
+        startTime: string;
+        endTime: string;
+        breakMinutes?: number;
+        lateThreshold?: number;
+        lateSeriousThreshold?: number;
+        earlyLeaveThreshold?: number;
+    }) {
+        return this.prisma.workShift.create({
+            data: {
+                branchId: data.branchId,
+                name: data.name,
+                startTime: data.startTime,
+                endTime: data.endTime,
+                breakMinutes: data.breakMinutes ?? 0,
+                lateThreshold: data.lateThreshold ?? 15,
+                lateSeriousThreshold: data.lateSeriousThreshold ?? 30,
+                earlyLeaveThreshold: data.earlyLeaveThreshold ?? 15,
+            },
+            include: { branch: { select: { id: true, name: true } } }
+        });
+    }
+
+    async updateShift(id: string, data: any) {
+        const shift = await this.prisma.workShift.findUnique({ where: { id } });
+        if (!shift) throw new NotFoundException('Không tìm thấy ca làm việc');
+
+        return this.prisma.workShift.update({
+            where: { id },
+            data: {
+                ...(data.name !== undefined && { name: data.name }),
+                ...(data.startTime !== undefined && { startTime: data.startTime }),
+                ...(data.endTime !== undefined && { endTime: data.endTime }),
+                ...(data.breakMinutes !== undefined && { breakMinutes: data.breakMinutes }),
+                ...(data.lateThreshold !== undefined && { lateThreshold: data.lateThreshold }),
+                ...(data.lateSeriousThreshold !== undefined && { lateSeriousThreshold: data.lateSeriousThreshold }),
+                ...(data.earlyLeaveThreshold !== undefined && { earlyLeaveThreshold: data.earlyLeaveThreshold }),
+                ...(data.isActive !== undefined && { isActive: data.isActive }),
+            },
+            include: { branch: { select: { id: true, name: true } } }
+        });
+    }
+
+    async deleteShift(id: string) {
+        const shift = await this.prisma.workShift.findUnique({ where: { id } });
+        if (!shift) throw new NotFoundException('Không tìm thấy ca làm việc');
+
+        // Check if any attendance records reference this shift
+        const count = await this.prisma.attendance.count({ where: { shiftId: id } });
+        if (count > 0) {
+            throw new BadRequestException(`Ca làm việc này đang được sử dụng bởi ${count} bản ghi chấm công. Hãy vô hiệu hóa thay vì xóa.`);
+        }
+
+        await this.prisma.workShift.delete({ where: { id } });
+        return { message: 'Đã xóa ca làm việc' };
+    }
 }

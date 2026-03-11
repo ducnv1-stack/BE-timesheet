@@ -65,4 +65,16 @@ export class CreateEmployeeDto {
     @IsOptional()
     @IsBoolean()
     isInternalDriver?: boolean;
+
+    @IsOptional()
+    customBaseSalary?: number;
+
+    @IsOptional()
+    customDiligentSalary?: number;
+
+    @IsOptional()
+    customAllowance?: number;
+
+    @IsOptional()
+    customStandardWorkingDays?: number;
 }

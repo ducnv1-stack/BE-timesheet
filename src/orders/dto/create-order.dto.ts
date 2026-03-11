@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsArray, ValidateNested, IsNumber, IsOptional, Min, Max, IsUUID, IsEnum } from 'class-validator';
+import { IsString, IsNotEmpty, IsArray, ValidateNested, IsNumber, IsOptional, Min, Max, IsUUID, IsEnum, IsBoolean } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class CreateDeliveryDto {
@@ -165,4 +165,57 @@ export class CreateOrderDto {
     @IsOptional()
     @IsString({ each: true })
     images?: string[];
+
+    @IsBoolean()
+    @IsOptional()
+    isUpgrade?: boolean;
+
+    @IsString()
+    @IsOptional()
+    oldOrderProductName?: string;
+
+    @IsNumber()
+    @IsOptional()
+    oldOrderAmount?: number;
+
+    @IsString()
+    @IsOptional()
+    oldOrderDate?: string; // ISO Date
+
+    @IsString()
+    @IsOptional()
+    oldOrderCustomerName?: string;
+
+    @IsString()
+    @IsOptional()
+    oldOrderCustomerPhone?: string;
+
+    @IsString()
+    @IsOptional()
+    oldOrderCustomerAddress?: string;
+
+    @IsUUID()
+    @IsOptional()
+    oldOrderProvinceId?: string;
+
+    @IsUUID()
+    @IsOptional()
+    oldOrderWardId?: string;
+
+    @IsString()
+    @IsOptional()
+    oldOrderCustomerCardNumber?: string;
+
+    @IsString()
+    @IsOptional()
+    oldOrderCustomerCardIssueDate?: string;
+
+    @IsString()
+    @IsOptional()
+    @IsUUID()
+    oldOrderId?: string;
+
+    @IsString()
+    @IsOptional()
+    oldOrderCode?: string;
 }

@@ -345,8 +345,12 @@ export class EmployeesService {
     }
 
     async getPerformanceStats(id: string, month: number, year: number) {
+        // For TIMESTAMP columns (confirmedAt) — local timezone for month range
         const startDate = new Date(year, month - 1, 1);
         const endDate = new Date(year, month, 0, 23, 59, 59);
+        // For DATE columns (orderDate) — UTC midnight for correct comparison
+        const orderStartDate = new Date(Date.UTC(year, month - 1, 1));
+        const orderEndDate = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999));
 
         const employee = await this.prisma.employee.findUnique({
             where: { id },
@@ -377,6 +381,9 @@ export class EmployeesService {
         let baseReward = 0;
         let actualReward = 0;
         let milestone = 0;
+        let diligentSalary = 0;
+        let allowance = 0;
+        let actualWorkingDays = 0;
         let isPenalty = false;
         let isClemency = false;
 
@@ -393,7 +400,7 @@ export class EmployeesService {
         const branchTotalRevenue = branchOrders.reduce((sum, o) => sum + Number(o.totalAmount), 0);
 
         const branchOrdersCreated = await this.prisma.order.findMany({
-            where: { branchId: employee.branchId, createdAt: { gte: startDate, lte: endDate } }
+            where: { branchId: employee.branchId, status: { notIn: ['canceled', 'rejected'] }, orderDate: { gte: orderStartDate, lte: orderEndDate } }
         });
         const branchGrossRevenue = branchOrdersCreated.reduce((sum, o) => sum + Number(o.totalAmount), 0);
 
@@ -446,7 +453,7 @@ export class EmployeesService {
             const systemRevenue = allBranchesData.reduce((sum, b) => sum + b.orders.reduce((s, o) => s + Number(o.totalAmount), 0), 0);
 
             const systemGrossRevAgg = await this.prisma.order.aggregate({
-                where: { createdAt: { gte: startDate, lte: endDate } },
+                where: { status: { notIn: ['canceled', 'rejected'] }, orderDate: { gte: orderStartDate, lte: orderEndDate } },
                 _sum: { totalAmount: true }
             });
 
@@ -469,7 +476,7 @@ export class EmployeesService {
                 _sum: { totalAmount: true }
             });
             const systemGrossRev = await this.prisma.order.aggregate({
-                where: { createdAt: { gte: startDate, lte: endDate } },
+                where: { status: { notIn: ['canceled', 'rejected'] }, orderDate: { gte: orderStartDate, lte: orderEndDate } },
                 _sum: { totalAmount: true }
             });
             const sysRev = Number(systemRevenue._sum.totalAmount || 0);
@@ -497,7 +504,7 @@ export class EmployeesService {
             });
 
             const grossSplits = await this.prisma.orderSplit.findMany({
-                where: { employeeId: id, order: { createdAt: { gte: startDate, lte: endDate } } }
+                where: { employeeId: id, order: { status: { notIn: ['canceled', 'rejected'] }, orderDate: { gte: orderStartDate, lte: orderEndDate } } }
             });
             grossRevenue = grossSplits.reduce((sum, split) => sum + Number(split.splitAmount), 0);
 
@@ -538,7 +545,48 @@ export class EmployeesService {
             shippingFee = driverJobs.reduce((s, d) => s + Number(d.deliveryFee || 0), 0);
         }
 
-        const netIncome = baseSalary + commission + hotBonus + shippingFee + actualReward;
+        // --- TÍNH LƯƠNG CƠ BẢN DỰA TRÊN NGÀY CÔNG ---
+        const attendances = await this.prisma.attendance.findMany({
+            where: {
+                employeeId: id,
+                date: { gte: orderStartDate, lte: orderEndDate },
+                checkInTime: { not: null }
+            }
+        });
+        actualWorkingDays = attendances.length;
+        const rawConfigBaseSalary = (employee as any).customBaseSalary ?? (employee.user?.role as any)?.baseSalary;
+        const rawConfigStandardDays = (employee as any).customStandardWorkingDays ?? (employee.user?.role as any)?.standardWorkingDays;
+
+        const effectiveBaseSalary = rawConfigBaseSalary != null ? Number(rawConfigBaseSalary) : baseSalary;
+        const effectiveStandardDays = rawConfigStandardDays != null ? Number(rawConfigStandardDays) : 27;
+
+        if (effectiveStandardDays > 0) {
+            if (actualWorkingDays >= effectiveStandardDays) {
+                baseSalary = effectiveBaseSalary;
+            } else {
+                baseSalary = (actualWorkingDays / effectiveStandardDays) * effectiveBaseSalary;
+            }
+        } else {
+            baseSalary = effectiveBaseSalary;
+        }
+
+        const rawConfigDiligent = (employee as any).customDiligentSalary ?? (employee.user?.role as any)?.diligentSalary;
+        const rawConfigAllowance = (employee as any).customAllowance ?? (employee.user?.role as any)?.allowance;
+
+        const effectiveDiligent = rawConfigDiligent != null ? Number(rawConfigDiligent) : 0;
+        const effectiveAllowance = rawConfigAllowance != null ? Number(rawConfigAllowance) : 0;
+
+        // Tính Chuyên cần: Phải đạt đủ hoặc vượt công chuẩn mới được hưởng 100% chuyên cần, ngược lại = 0
+        if (effectiveStandardDays > 0) {
+            diligentSalary = (actualWorkingDays >= effectiveStandardDays) ? effectiveDiligent : 0;
+        } else {
+            diligentSalary = effectiveDiligent;
+        }
+        
+        // Phụ cấp thường là cố định theo tháng
+        allowance = effectiveAllowance;
+
+        const netIncome = baseSalary + commission + hotBonus + shippingFee + actualReward + diligentSalary + allowance;
 
         return {
             totalOrders,
@@ -553,13 +601,19 @@ export class EmployeesService {
             commission,
             shippingFee,
             baseSalary,
+            diligentSalary,
+            allowance,
             netIncome,
             branchTotalOrders,
             branchTotalRevenue,
             isPenalty,
-            isClemency
+            isClemency,
+            actualWorkingDays,
+            effectiveStandardDays,
+            effectiveBaseSalary, // Lương CB gốc để frontend hiển thị tooltips hoặc thông tin
         };
     }
+
 
     async getPerformanceReport(month: number, year: number, branchId?: string) {
         const employees = await this.prisma.employee.findMany({

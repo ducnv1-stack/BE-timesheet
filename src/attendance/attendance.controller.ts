@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Query, UseGuards, Request } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Query, Param } from '@nestjs/common';
 import { AttendanceService } from './attendance.service';
 import { CheckInDto, CheckOutDto } from './dto/attendance.dto';
 
@@ -8,7 +8,6 @@ export class AttendanceController {
 
     @Get('today')
     async getToday(@Query('employeeId') employeeId: string) {
-        // Lưu ý: Sau này sẽ dùng dữ liệu từ JWT/User Request thay vì Query param
         return this.attendanceService.getTodayStatus(employeeId);
     }
 
@@ -50,5 +49,27 @@ export class AttendanceController {
             search,
             position
         );
+    }
+
+    // ========== WORK SHIFT CRUD ==========
+
+    @Get('shifts')
+    async getShifts(@Query('branchId') branchId?: string) {
+        return this.attendanceService.getShifts(branchId);
+    }
+
+    @Post('shifts')
+    async createShift(@Body() data: any) {
+        return this.attendanceService.createShift(data);
+    }
+
+    @Patch('shifts/:id')
+    async updateShift(@Param('id') id: string, @Body() data: any) {
+        return this.attendanceService.updateShift(id, data);
+    }
+
+    @Delete('shifts/:id')
+    async deleteShift(@Param('id') id: string) {
+        return this.attendanceService.deleteShift(id);
     }
 }

@@ -54,10 +54,10 @@ export class DashboardService {
             if (!effectiveBranchId) return { error: 'No branch assigned to manager' };
         }
 
-        const { startDate, endDate } = this.getVNDateBounds(startStr, endStr);
+        const { startDate, endDate, orderStartDate, orderEndDate } = this.getVNDateBounds(startStr, endStr);
 
         // Calculate all rankings
-        const rankings = await this.getRankings(undefined, effectiveBranchId, startDate, endDate, true);
+        const rankings = await this.getRankings(undefined, effectiveBranchId, startDate, endDate, orderStartDate, orderEndDate, true);
 
         return {
             ...rankings,
@@ -67,7 +67,7 @@ export class DashboardService {
     }
 
     private async getAccountingStats(branchId?: string, startStr?: string, endStr?: string) {
-        const { startDate, endDate } = this.getVNDateBounds(startStr, endStr);
+        const { startDate, endDate, orderStartDate, orderEndDate } = this.getVNDateBounds(startStr, endStr);
 
         // Base filter for orders (ONLY confirmed orders count towards revenue)
         const orderWhere: any = {
@@ -136,12 +136,12 @@ export class DashboardService {
                     ...(branchId ? { branchId } : {})
                 }
             }),
-            // DOANH SỐ BÁN — Tất cả đơn theo createdAt (không cần confirm)
+            // DOANH SỐ BÁN — Tất cả đơn theo orderDate (không cần confirm)
             this.prisma.order.aggregate({
                 where: {
                     ...(branchId ? { branchId } : {}),
                     status: { notIn: ['canceled', 'rejected'] },
-                    createdAt: { gte: startDate, lte: endDate }
+                    orderDate: { gte: orderStartDate, lte: orderEndDate }
                 },
                 _sum: { totalAmount: true }
             }),
@@ -149,7 +149,7 @@ export class DashboardService {
                 where: {
                     ...(branchId ? { branchId } : {}),
                     status: { notIn: ['canceled', 'rejected'] },
-                    createdAt: { gte: startDate, lte: endDate }
+                    orderDate: { gte: orderStartDate, lte: orderEndDate }
                 }
             }),
             // 11. KHÁCH CÒN NỢ — Tất cả đơn chưa xác nhận thanh toán (lũy kế đến endDate)
@@ -234,7 +234,7 @@ export class DashboardService {
                 },
                 {
                     // All orders in period for salesRevenue calculation
-                    createdAt: { gte: startDate, lte: endDate }
+                    orderDate: { gte: orderStartDate, lte: orderEndDate }
                 }
             ]
         };
@@ -246,7 +246,7 @@ export class DashboardService {
                     where: branchWhere,
                     select: {
                         totalAmount: true,
-                        createdAt: true,
+                        orderDate: true,
                         isPaymentConfirmed: true,
                         confirmedAt: true,
                         isInvoiceIssued: true,
@@ -269,7 +269,7 @@ export class DashboardService {
                 where: {
                     order: {
                         status: { notIn: ['canceled', 'rejected'] },
-                        createdAt: { gte: startDate, lte: endDate }
+                        orderDate: { gte: orderStartDate, lte: orderEndDate }
                     }
                 }
             }),
@@ -295,7 +295,7 @@ export class DashboardService {
 
             // Đơn bán: Chỉ tính đơn thuộc chi nhánh chủ quản (không tính đơn được chia)
             const allOrdersControlledByBranch = b.orders.filter(o =>
-                o.branchId === b.id && o.createdAt >= startDate && o.createdAt <= endDate
+                o.branchId === b.id && o.orderDate >= orderStartDate && o.orderDate <= orderEndDate
             );
             const salesOrderCount = allOrdersControlledByBranch.length;
 
@@ -368,7 +368,7 @@ export class DashboardService {
                 status: { notIn: ['canceled', 'rejected'] },
                 ...(branchId ? { branchId } : {}),
                 OR: [
-                    { createdAt: { gte: startDate, lte: endDate } },
+                    { orderDate: { gte: orderStartDate, lte: orderEndDate } },
                     {
                         isPaymentConfirmed: true,
                         confirmedAt: { gte: startDate, lte: endDate }
@@ -377,16 +377,16 @@ export class DashboardService {
             },
             select: {
                 totalAmount: true,
-                createdAt: true,
+                orderDate: true,
                 isPaymentConfirmed: true,
                 confirmedAt: true
             }
         });
 
         allSystemOrders.forEach(o => {
-            // 1. Sales Trend (by createdAt)
-            if (o.createdAt >= startDate && o.createdAt <= endDate) {
-                const sDate = new Date(o.createdAt.getTime() + 7 * 60 * 60 * 1000).toISOString().split('T')[0];
+            // 1. Sales Trend (by orderDate)
+            if (o.orderDate >= orderStartDate && o.orderDate <= orderEndDate) {
+                const sDate = new Date(o.orderDate.getTime() + 7 * 60 * 60 * 1000).toISOString().split('T')[0];
                 const sEntry = trendMap.get(sDate) || { date: sDate, salesRevenue: 0, revenue: 0 };
                 sEntry.salesRevenue += Number(o.totalAmount);
                 trendMap.set(sDate, sEntry);
@@ -406,7 +406,7 @@ export class DashboardService {
 
         // ===== Top 5 Sales Employees =====
         const splitOrderWhere: any = {
-            createdAt: { gte: startDate, lte: endDate },
+            orderDate: { gte: orderStartDate, lte: orderEndDate },
             status: { notIn: ['canceled', 'rejected'] }
         };
 
@@ -484,7 +484,7 @@ export class DashboardService {
     private async getManagerStats(employeeId?: string, branchId?: string, startStr?: string, endStr?: string) {
         if (!branchId) return { error: 'No branch assigned' };
 
-        const { startDate, endDate } = this.getVNDateBounds(startStr, endStr);
+        const { startDate, endDate, orderStartDate, orderEndDate } = this.getVNDateBounds(startStr, endStr);
 
         const currentEmployees = await this.prisma.employee.findMany({
             where: { branchId, status: 'active' },
@@ -500,7 +500,7 @@ export class DashboardService {
                 employeeId: { in: currentEmployeeIds },
                 order: {
                     status: { notIn: ['canceled', 'rejected'] },
-                    createdAt: { gte: startDate, lte: endDate }
+                    orderDate: { gte: orderStartDate, lte: orderEndDate }
                 }
             },
             include: {
@@ -514,7 +514,7 @@ export class DashboardService {
             where: {
                 branchId,
                 status: { notIn: ['canceled', 'rejected'] },
-                createdAt: { gte: startDate, lte: endDate }
+                orderDate: { gte: orderStartDate, lte: orderEndDate }
             }
         });
 
@@ -586,7 +586,7 @@ export class DashboardService {
                 where: {
                     branchId,
                     status: { notIn: ['canceled', 'rejected'] },
-                    createdAt: { gte: startDate, lte: endDate }
+                    orderDate: { gte: orderStartDate, lte: orderEndDate }
                 }
             }),
 
@@ -698,7 +698,7 @@ export class DashboardService {
                 order: {
                     status: { notIn: ['canceled', 'rejected'] },
                     OR: [
-                        { createdAt: { gte: startDate, lte: endDate } },
+                        { orderDate: { gte: orderStartDate, lte: orderEndDate } },
                         {
                             isPaymentConfirmed: true,
                             confirmedAt: { gte: startDate, lte: endDate }
@@ -710,7 +710,7 @@ export class DashboardService {
                 order: {
                     select: {
                         totalAmount: true,
-                        createdAt: true,
+                        orderDate: true,
                         isPaymentConfirmed: true,
                         confirmedAt: true
                     }
@@ -721,8 +721,8 @@ export class DashboardService {
         branchTrendOrders.forEach(split => {
             const o = split.order;
             // 1. Sales Trend
-            if (o.createdAt >= startDate && o.createdAt <= endDate) {
-                const sDate = new Date(o.createdAt.getTime() + 7 * 60 * 60 * 1000).toISOString().split('T')[0];
+            if (o.orderDate >= orderStartDate && o.orderDate <= orderEndDate) {
+                const sDate = new Date(o.orderDate.getTime() + 7 * 60 * 60 * 1000).toISOString().split('T')[0];
                 const sEntry = mgrTrendMap.get(sDate) || { date: sDate, salesRevenue: 0, revenue: 0 };
                 sEntry.salesRevenue += Number(split.splitAmount);
                 mgrTrendMap.set(sDate, sEntry);
@@ -818,7 +818,7 @@ export class DashboardService {
                 bestSellers,
                 revenueTrend,
                 topEmployees,
-                ranking: await this.getRankings(employeeId, branchId, startDate, endDate)
+                ranking: await this.getRankings(employeeId, branchId, startDate, endDate, orderStartDate, orderEndDate)
             };
         }
 
@@ -897,14 +897,14 @@ export class DashboardService {
             bestSellers,
             revenueTrend,
             topEmployees,
-            ranking: await this.getRankings(employeeId, branchId, startDate, endDate)
+            ranking: await this.getRankings(employeeId, branchId, startDate, endDate, orderStartDate, orderEndDate)
         };
     }
 
     private async getSaleStats(employeeId?: string, startStr?: string, endStr?: string) {
         if (!employeeId) return { error: 'No employee record found' };
 
-        const { startDate, endDate } = this.getVNDateBounds(startStr, endStr);
+        const { startDate, endDate, orderStartDate, orderEndDate } = this.getVNDateBounds(startStr, endStr);
         const now = new Date();
 
         // 1. Fetch Salary Rules
@@ -918,11 +918,11 @@ export class DashboardService {
                 employeeId,
                 order: {
                     status: { notIn: ['canceled', 'rejected'] },
-                    createdAt: { gte: startDate, lte: endDate }
+                    orderDate: { gte: orderStartDate, lte: orderEndDate }
                 }
             },
             include: {
-                order: { select: { createdAt: true } }
+                order: { select: { orderDate: true } }
             }
         });
         const salesRevenue = salesSplits.reduce((sum, s) => sum + Number(s.splitAmount), 0);
@@ -1088,8 +1088,8 @@ export class DashboardService {
             }).reduce((sum, s) => sum + Number(s.splitAmount), 0);
 
             const periodSalesRevenue = salesSplits.filter(s => {
-                const createdAt = s.order.createdAt;
-                return createdAt && createdAt >= p.start && createdAt <= p.end;
+                const orderDate = s.order.orderDate;
+                return orderDate && orderDate >= p.start && orderDate <= p.end;
             }).reduce((sum, s) => sum + Number(s.splitAmount), 0);
 
             const isUpcoming = now < p.start;
@@ -1155,7 +1155,7 @@ export class DashboardService {
                 isClemency
             },
             kpiTarget: 200000000, // Base target 200tr
-            ranking: await this.getRankings(employeeId, undefined, startDate, endDate)
+            ranking: await this.getRankings(employeeId, undefined, startDate, endDate, orderStartDate, orderEndDate)
         };
     }
 
@@ -1163,7 +1163,7 @@ export class DashboardService {
         // NOTE: For Telesale, since they earn 0.2% commission on the TOTAL system revenue,
         // we don't strictly need the employeeId to calculate the main stats.
 
-        const { startDate, endDate } = this.getVNDateBounds(startStr, endStr);
+        const { startDate, endDate, orderStartDate, orderEndDate } = this.getVNDateBounds(startStr, endStr);
 
         const orderWhere: any = {
             isPaymentConfirmed: true,
@@ -1186,7 +1186,7 @@ export class DashboardService {
         const systemSalesResult = await this.prisma.order.aggregate({
             where: {
                 status: { notIn: ['canceled', 'rejected'] },
-                createdAt: { gte: startDate, lte: endDate }
+                orderDate: { gte: orderStartDate, lte: orderEndDate }
             },
             _sum: { totalAmount: true }
         });
@@ -1196,7 +1196,7 @@ export class DashboardService {
         const totalOrderCount = await this.prisma.order.count({
             where: {
                 status: { notIn: ['canceled', 'rejected'] },
-                createdAt: { gte: startDate, lte: endDate }
+                orderDate: { gte: orderStartDate, lte: orderEndDate }
             }
         });
         const baseSalary = 6000000;
@@ -1241,13 +1241,13 @@ export class DashboardService {
         const allSystemSales = await this.prisma.order.findMany({
             where: {
                 status: { notIn: ['canceled', 'rejected'] },
-                createdAt: { gte: startDate, lte: endDate }
+                orderDate: { gte: orderStartDate, lte: orderEndDate }
             },
-            select: { createdAt: true, totalAmount: true }
+            select: { orderDate: true, totalAmount: true }
         });
 
         allSystemSales.forEach(o => {
-            const date = new Date(o.createdAt.getTime() + 7 * 60 * 60 * 1000).toISOString().split('T')[0];
+            const date = new Date(o.orderDate.getTime() + 7 * 60 * 60 * 1000).toISOString().split('T')[0];
             const current = trendMap.get(date) || { date, revenue: 0, salesRevenue: 0 };
             current.salesRevenue += Number(o.totalAmount);
             trendMap.set(date, current);
@@ -1285,7 +1285,7 @@ export class DashboardService {
     private async getMarketingStats(employeeId?: string, startStr?: string, endStr?: string) {
         if (!employeeId) return { error: 'Employee not found' };
 
-        const { startDate, endDate } = this.getVNDateBounds(startStr, endStr);
+        const { startDate, endDate, orderStartDate, orderEndDate } = this.getVNDateBounds(startStr, endStr);
 
         // 1. Get Marketing Rules for this employee
         const rules = await this.prisma.marketingSalaryRule.findMany({
@@ -1344,7 +1344,7 @@ export class DashboardService {
     }
 
     async getViolatedOrders(userId: string, branchId: string, startStr?: string, endStr?: string) {
-        const { startDate, endDate } = this.getVNDateBounds(startStr, endStr);
+        const { startDate, endDate, orderStartDate, orderEndDate } = this.getVNDateBounds(startStr, endStr);
 
         // Logic lọc đơn hàng đồng bộ hoàn toàn với getAccountingStats -> branchWhere & revenueOrders filter
         const orderWhere: any = {
@@ -1401,7 +1401,7 @@ export class DashboardService {
     private async getDriverStats(employeeId?: string, startStr?: string, endStr?: string) {
         if (!employeeId) return { error: 'No employee record found' };
 
-        const { startDate, endDate } = this.getVNDateBounds(startStr, endStr);
+        const { startDate, endDate, orderStartDate, orderEndDate } = this.getVNDateBounds(startStr, endStr);
 
         const [deliveries, allTimeStats] = await Promise.all([
             this.prisma.delivery.findMany({
@@ -1458,14 +1458,14 @@ export class DashboardService {
         };
     }
 
-    private async getRankings(employeeId?: string, branchId?: string, startDate?: Date, endDate?: Date, isFullList = false) {
+    private async getRankings(employeeId?: string, branchId?: string, startDate?: Date, endDate?: Date, orderStartDate?: Date, orderEndDate?: Date, isFullList = false) {
         if (!startDate || !endDate) return null;
 
         // 1. Get splits to calculate ranks
         const whereSales: any = {
             order: {
                 status: { notIn: ['canceled', 'rejected'] },
-                createdAt: { gte: startDate, lte: endDate }
+                orderDate: { gte: orderStartDate, lte: orderEndDate }
             }
         };
         const whereCompleted: any = {
@@ -1715,25 +1715,33 @@ export class DashboardService {
     }
 
     private getVNDateBounds(startStr?: string, endStr?: string) {
+        // For TIMESTAMP columns (confirmedAt, createdAt, updatedAt) — need VN timezone offset
         let startDate: Date;
         let endDate: Date;
+        // For DATE columns (orderDate) — need UTC midnight (no timezone offset)
+        let orderStartDate: Date;
+        let orderEndDate: Date;
 
         if (startStr) {
             startDate = new Date(`${startStr}T00:00:00+07:00`);
+            orderStartDate = new Date(`${startStr}T00:00:00Z`);
         } else {
             const now = new Date();
             // Mặc định là đầu tháng hiện tại theo giờ VN
             startDate = new Date(Date.UTC(now.getFullYear(), now.getMonth(), 1) - 7 * 60 * 60 * 1000);
+            orderStartDate = new Date(Date.UTC(now.getFullYear(), now.getMonth(), 1));
         }
 
         if (endStr) {
             endDate = new Date(`${endStr}T23:59:59.999+07:00`);
+            orderEndDate = new Date(`${endStr}T23:59:59.999Z`);
         } else {
             const now = new Date();
             // Mặc định là cuối tháng hiện tại theo giờ VN
             endDate = new Date(Date.UTC(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999) - 7 * 60 * 60 * 1000);
+            orderEndDate = new Date(Date.UTC(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999));
         }
 
-        return { startDate, endDate };
+        return { startDate, endDate, orderStartDate, orderEndDate };
     }
 }
