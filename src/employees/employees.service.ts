@@ -17,6 +17,8 @@ export class EmployeesService {
         position?: string;
         status?: string;
         department?: string;
+        positionId?: string;
+        departmentId?: string;
         hasAccount?: 'true' | 'false';
         userId?: string;
         roleCode?: string;
@@ -62,6 +64,14 @@ export class EmployeesService {
             where.department = query.department;
         }
 
+        if ((query as any).positionId) {
+            where.positionId = (query as any).positionId;
+        }
+
+        if ((query as any).departmentId) {
+            where.departmentId = (query as any).departmentId;
+        }
+
         // Filter by account existence
         if (query.hasAccount === 'true') {
             where.userId = roleCode && !['DIRECTOR', 'CHIEF_ACCOUNTANT', 'MANAGER', 'ACCOUNTANT', 'BRANCH_ACCOUNTANT', 'HR', 'ADMIN'].includes(roleCode)
@@ -76,6 +86,9 @@ export class EmployeesService {
             where,
             include: {
                 branch: true,
+                pos: { select: { id: true, name: true } },
+                dept: { select: { id: true, name: true } },
+                attendancePolicy: { select: { id: true, name: true } },
                 user: {
                     select: {
                         id: true,
@@ -121,6 +134,17 @@ export class EmployeesService {
             where: { id },
             include: {
                 branch: true,
+                pos: { 
+                    include: { 
+                        attendancePolicy: {
+                            include: { days: true }
+                        } 
+                    } 
+                },
+                dept: true,
+                attendancePolicy: {
+                    include: { days: true }
+                },
                 user: {
                     select: {
                         id: true,
@@ -164,6 +188,9 @@ export class EmployeesService {
             },
             include: {
                 branch: true,
+                pos: true,
+                dept: true,
+                attendancePolicy: true
             },
         });
 
@@ -198,6 +225,9 @@ export class EmployeesService {
             },
             include: {
                 branch: true,
+                pos: true,
+                dept: true,
+                attendancePolicy: true,
                 user: {
                     select: {
                         id: true,
@@ -354,7 +384,10 @@ export class EmployeesService {
 
         const employee = await this.prisma.employee.findUnique({
             where: { id },
-            include: { user: { include: { role: true } } }
+            include: { 
+                user: { include: { role: true } },
+                pos: true
+            }
         });
         if (!employee) throw new NotFoundException('Employee not found');
 
@@ -568,12 +601,16 @@ export class EmployeesService {
             totalOrders = processedIds.size;
 
             const achievedRule = salesRules.find(r => totalRevenue >= Number(r.targetRevenue));
+            
+            // Lấy lương mặc định từ Chức vụ (nếu có) thay vì gán cứng
+            const positionDefaultBaseSalary = Number((employee as any).pos?.baseSalary || 0);
+
             if (achievedRule) {
                 baseReward = Number(achievedRule.bonusAmount);
-                baseSalary = employee.position === 'NVBH' ? 8000000 : Number(achievedRule.baseSalary);
+                baseSalary = Number(achievedRule.baseSalary);
                 milestone = Number(achievedRule.targetRevenue);
-            } else if (employee.position === 'NVBH') {
-                baseSalary = 8000000;
+            } else {
+                baseSalary = positionDefaultBaseSalary;
             }
 
             lowPriceRatio = totalRevenue > 0 ? (lowPriceValue / totalRevenue) : 0;
@@ -596,8 +633,8 @@ export class EmployeesService {
             }
         });
         actualWorkingDays = attendances.length;
-        const rawConfigBaseSalary = (employee as any).customBaseSalary ?? (employee.user?.role as any)?.baseSalary;
-        const rawConfigStandardDays = (employee as any).customStandardWorkingDays ?? (employee.user?.role as any)?.standardWorkingDays;
+        const rawConfigBaseSalary = (employee as any).customBaseSalary ?? (employee as any).pos?.baseSalary;
+        const rawConfigStandardDays = (employee as any).customStandardWorkingDays ?? (employee as any).pos?.standardWorkingDays;
 
         const effectiveBaseSalary = rawConfigBaseSalary != null ? Number(rawConfigBaseSalary) : baseSalary;
         const effectiveStandardDays = rawConfigStandardDays != null ? Number(rawConfigStandardDays) : 27;
@@ -612,8 +649,8 @@ export class EmployeesService {
             baseSalary = effectiveBaseSalary;
         }
 
-        const rawConfigDiligent = (employee as any).customDiligentSalary ?? (employee.user?.role as any)?.diligentSalary;
-        const rawConfigAllowance = (employee as any).customAllowance ?? (employee.user?.role as any)?.allowance;
+        const rawConfigDiligent = (employee as any).customDiligentSalary ?? (employee as any).pos?.diligentSalary;
+        const rawConfigAllowance = (employee as any).customAllowance ?? (employee as any).pos?.allowance;
 
         const effectiveDiligent = rawConfigDiligent != null ? Number(rawConfigDiligent) : 0;
         const effectiveAllowance = rawConfigAllowance != null ? Number(rawConfigAllowance) : 0;
@@ -663,7 +700,11 @@ export class EmployeesService {
                 status: { not: 'Nghỉ việc' },
                 ...(branchId ? { branchId } : {})
             },
-            include: { branch: true }
+            include: { 
+                branch: true,
+                pos: true,
+                dept: true
+            }
         });
 
         const report = [];
@@ -675,8 +716,8 @@ export class EmployeesService {
                 fullName: emp.fullName,
                 branchId: emp.branchId,
                 branchName: emp.branch?.name,
-                position: emp.position,
-                department: emp.department,
+                position: (emp as any).pos?.name || emp.position,
+                department: (emp as any).dept?.name || emp.department,
                 status: emp.status,
                 avatarUrl: emp.avatarUrl
             });

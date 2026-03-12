@@ -19,6 +19,14 @@ export class CreateEmployeeDto {
     department?: string;
 
     @IsOptional()
+    @IsUUID()
+    positionId?: string;
+
+    @IsOptional()
+    @IsUUID()
+    departmentId?: string;
+
+    @IsOptional()
     @IsDateString()
     birthday?: string;
 
@@ -77,4 +85,8 @@ export class CreateEmployeeDto {
 
     @IsOptional()
     customStandardWorkingDays?: number;
+
+    @IsOptional()
+    @IsUUID()
+    attendancePolicyId?: string;
 }

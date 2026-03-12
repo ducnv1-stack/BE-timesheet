@@ -165,8 +165,13 @@ model Employee {
   branchId              String    @map("branch_id") @db.Uuid
   fullName              String    @map("full_name")
   phone                 String?
-  position              String // sale, manager, telesale, driver...
-  department            String?
+  position              String // sale, manager, telesale, driver... (Legacy) - WILL REMOVE LATER
+  department            String? // Legacy - WILL REMOVE LATER
+  
+  // 🆕 Relations mới cho Chức vụ & Phòng ban
+  positionId            String?   @map("position_id") @db.Uuid
+  departmentId          String?   @map("department_id") @db.Uuid
+  
   birthday              DateTime? @db.Date
   birthMonth            Int?      @map("birth_month")
   gender                String?
@@ -181,6 +186,9 @@ model Employee {
   socialInsuranceNumber String?   @map("social_insurance_number")
   isInternalDriver      Boolean   @default(false) @map("is_internal_driver")
   avatarUrl             String?   @map("avatar_url") // Link ảnh đại diện
+  
+  // 🆕 Chính sách chấm công riêng (Ngoại lệ)
+  attendancePolicyId    String?   @map("attendance_policy_id") @db.Uuid
 
   // 🆕 Cài đặt Lương ngoại lệ cá nhân
   customBaseSalary          Decimal? @map("custom_base_salary") @db.Decimal(20, 2)
@@ -192,6 +200,9 @@ model Employee {
 
   user           User?                 @relation(fields: [userId], references: [id])
   branch         Branch                @relation(fields: [branchId], references: [id])
+  pos            Position?             @relation(fields: [positionId], references: [id])
+  dept           Department?           @relation(fields: [departmentId], references: [id])
+  attendancePolicy AttendancePolicy?   @relation(fields: [attendancePolicyId], references: [id])
   splits         OrderSplit[]
   deliveries     Delivery[]
   marketingRules MarketingSalaryRule[]
@@ -202,6 +213,82 @@ model Employee {
   monthlyAttendanceSummaries MonthlyAttendanceSummary[]
 
   @@map("employees")
+}
+
+// 🆕 Bảng Phòng ban
+model Department {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @unique
+  note      String?  @db.Text
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  employees Employee[]
+
+  @@map("departments")
+}
+
+// 🆕 Bảng Chức vụ
+model Position {
+  id                 String   @id @default(uuid()) @db.Uuid
+  name               String   @unique
+  attendancePolicyId String?  @map("attendance_policy_id") @db.Uuid
+  note               String?  @db.Text
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  // 🆕 Cài đặt Lương mặc định theo Chức vụ
+  baseSalary          Decimal? @map("base_salary") @db.Decimal(20, 2)
+  diligentSalary      Decimal? @map("diligent_salary") @db.Decimal(20, 2)
+  allowance           Decimal? @map("allowance") @db.Decimal(20, 2)
+  standardWorkingDays Int?     @map("standard_working_days")
+
+  attendancePolicy AttendancePolicy? @relation(fields: [attendancePolicyId], references: [id])
+  employees        Employee[]
+
+  @@map("positions")
+}
+
+// 🆕 Chính sách chấm công (Mẫu ca)
+model AttendancePolicy {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @unique // Ví dụ: "Chính sách Sale", "Chính sách VP"
+  note      String?  @db.Text
+  
+  // 🆕 GPS Overrides (Nếu có giá trị thì sẽ dùng thay cho GPS của Chi nhánh)
+  latitude  Float?
+  longitude Float?
+  radius    Int?     @default(200) // Bán kính mặc định 200m
+  
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  days      AttendancePolicyDay[]
+  positions Position[]
+  employees Employee[]
+
+  @@map("attendance_policies")
+}
+
+// 🆕 Chi tiết quy tắc từng ngày trong chính sách
+model AttendancePolicyDay {
+  id                 String   @id @default(uuid()) @db.Uuid
+  attendancePolicyId String   @map("attendance_policy_id") @db.Uuid
+  dayOfWeek          Int      // 0: Chủ nhật, 1: Thứ 2, ..., 6: Thứ 7
+  startTime          String   @map("start_time") // "08:00"
+  endTime            String   @map("end_time")   // "17:30"
+  isOff              Boolean  @default(false) @map("is_off") // Ngày nghỉ (ví dụ CN là nghỉ)
+  allowOT            Boolean  @default(false) @map("allow_ot") // Có tính tăng ca không
+  otMultiplier       Decimal  @default(1.5) @map("ot_multiplier") @db.Decimal(3, 2) // Hệ số OT
+  requireGPS         Boolean  @default(true) @map("require_gps") // Có bắt GPS không
+  workCount          Decimal  @default(1.0) @map("work_count") @db.Decimal(3, 2) // Số công (ví dụ 1.0 hoặc 0.5)
+  isFlexible         Boolean  @default(false) @map("is_flexible") // Chế độ linh hoạt (chỉ ghi nhận giờ, không tính muộn/sớm)
+
+  policy AttendancePolicy @relation(fields: [attendancePolicyId], references: [id], onDelete: Cascade)
+  attendances Attendance[]
+
+  @@unique([attendancePolicyId, dayOfWeek])
+  @@map("attendance_policy_days")
 }
 
 // 🟨 orders – Đơn hàng gốc
@@ -545,6 +632,8 @@ model Attendance {
   lateMinutes       Int?   @map("late_minutes")
   earlyLeaveMinutes Int?   @map("early_leave_minutes")
 
+  attendancePolicyDayId String?  @map("attendance_policy_day_id") @db.Uuid
+  
   note             String?  @db.Text
   isManualOverride Boolean  @default(false) @map("is_manual_override")
   approvedById     String?  @map("approved_by_id") @db.Uuid
@@ -554,6 +643,7 @@ model Attendance {
   employee Employee   @relation(fields: [employeeId], references: [id], onDelete: Cascade)
   branch   Branch     @relation(fields: [branchId], references: [id])
   shift    WorkShift? @relation(fields: [shiftId], references: [id])
+  policyDay AttendancePolicyDay? @relation(fields: [attendancePolicyDayId], references: [id])
 
   @@unique([employeeId, date])
   @@index([employeeId, date])

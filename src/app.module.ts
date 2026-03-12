@@ -16,6 +16,9 @@ import { AddressesModule } from './addresses/addresses.module';
 import { AttendanceModule } from './attendance/attendance.module';
 import { DeliveryFeeRulesModule } from './delivery-fee-rules/delivery-fee-rules.module';
 import { StocksModule } from './stocks/stocks.module';
+import { DepartmentsModule } from './departments/departments.module';
+import { PositionsModule } from './positions/positions.module';
+import { AttendancePoliciesModule } from './attendance-policies/attendance-policies.module';
 
 @Module({
   imports: [
@@ -36,6 +39,9 @@ import { StocksModule } from './stocks/stocks.module';
     AttendanceModule,
     DeliveryFeeRulesModule,
     StocksModule,
+    DepartmentsModule,
+    PositionsModule,
+    AttendancePoliciesModule,
   ],
   controllers: [AppController],
   providers: [AppService],
