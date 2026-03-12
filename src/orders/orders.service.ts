@@ -3,14 +3,16 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { Decimal } from '@prisma/client/runtime/library';
-import { Prisma } from '@prisma/client';
+import { Prisma, TransactionType } from '@prisma/client';
 import { DeliveryFeeRulesService } from '../delivery-fee-rules/delivery-fee-rules.service';
+import { StocksService } from '../stocks/stocks.service';
 
 @Injectable()
 export class OrdersService {
     constructor(
         private prisma: PrismaService,
         private deliveryFeeRulesService: DeliveryFeeRulesService,
+        private stocksService: StocksService,
     ) { }
 
     async create(createOrderDto: CreateOrderDto, userId: string) {
@@ -201,6 +203,38 @@ export class OrdersService {
                 },
             });
 
+            // 5. Update Stock (DISABLED TEMPORARILY AS PER USER REQUEST)
+            /*
+            if (finalOrder) {
+                for (const item of itemProcessing) {
+                    await this.stocksService.createTransaction({
+                        type: TransactionType.SALE,
+                        fromBranchId: finalOrder.branchId,
+                        productId: item.productId,
+                        quantity: item.quantity,
+                        serialNumbers: (createOrderDto as any).serialNumbers?.[item.productId] || [],
+                        note: `Bán lẻ - Đơn hàng ${finalOrder.id}`,
+                        createdBy: userId
+                    });
+                }
+
+                // 6. Handle Upgrade Return Stock
+                if (finalOrder.isUpgrade && (createOrderDto as any).oldOrderSerialNumber) {
+                    const oldProductId = (createOrderDto as any).oldOrderProductId || itemProcessing[0].productId;
+                    
+                    await this.stocksService.createTransaction({
+                        type: TransactionType.UPGRADE_RETURN,
+                        toBranchId: finalOrder.branchId,
+                        productId: oldProductId,
+                        quantity: 1,
+                        serialNumbers: [(createOrderDto as any).oldOrderSerialNumber],
+                        note: `Thu hồi nâng cấp - Đơn hàng ${finalOrder.id}`,
+                        createdBy: userId
+                    });
+                }
+            }
+            */
+
             return finalOrder;
         });
     }
@@ -264,14 +298,18 @@ export class OrdersService {
 
                         const lineTotal = new Decimal(item.unitPrice).mul(item.quantity);
                         totalAmount = totalAmount.add(lineTotal);
-                        const isBelowMin = new Decimal(item.unitPrice).lt(product.minPrice);
+                        const effectivePrice = (updateOrderDto.isUpgrade || originalOrder.isUpgrade)
+                            ? new Decimal(item.unitPrice).add(new Decimal(updateOrderDto.oldOrderAmount || originalOrder.oldOrderAmount || 0))
+                            : new Decimal(item.unitPrice);
+
+                        const isBelowMin = effectivePrice.lt(product.minPrice);
 
                         let bonusAmount = new Decimal(0);
                         let saleBonusAmount = new Decimal(0);
                         let managerBonusAmount = new Decimal(0);
 
                         if (product.isHighEnd) {
-                            const rule = product.bonusRules.find(r => new Decimal(item.unitPrice).gte(r.minSellPrice));
+                            const rule = product.bonusRules.find(r => effectivePrice.gte(r.minSellPrice));
                             if (rule) {
                                 bonusAmount = rule.bonusAmount;
                                 saleBonusAmount = bonusAmount.mul(rule.salePercent).div(100);
@@ -413,6 +451,50 @@ export class OrdersService {
                     newData: finalUpdatedOrder as any,
                 },
             });
+
+            // 6. Rebalance Stock if items changed (DISABLED TEMPORARILY)
+            /*
+            if (items && finalUpdatedOrder) {
+                // Return old items to stock
+                for (const oldItem of originalOrder.items) {
+                    await this.stocksService.createTransaction({
+                        type: TransactionType.RETURN,
+                        toBranchId: originalOrder.branchId,
+                        productId: oldItem.productId,
+                        quantity: oldItem.quantity,
+                        note: `Hoàn kho do sửa đơn hàng ${id}`,
+                        createdBy: userId
+                    });
+                }
+                // Subtract new items from stock
+                for (const newItem of itemProcessing) {
+                    await this.stocksService.createTransaction({
+                        type: TransactionType.SALE,
+                        fromBranchId: finalUpdatedOrder.branchId,
+                        productId: newItem.productId,
+                        quantity: newItem.quantity,
+                        serialNumbers: (updateOrderDto as any).serialNumbers?.[newItem.productId] || [],
+                        note: `Trừ kho do sửa đơn hàng ${id}`,
+                        createdBy: userId
+                    });
+                }
+            }
+
+            // 7. Handle cancellation reversal
+            const newStatus = (orderData as any).status;
+            if (newStatus === 'canceled' && originalOrder.status !== 'canceled' && finalUpdatedOrder) {
+                for (const item of (finalUpdatedOrder as any).items) {
+                    await this.stocksService.createTransaction({
+                        type: TransactionType.RETURN,
+                        toBranchId: finalUpdatedOrder.branchId,
+                        productId: item.productId,
+                        quantity: item.quantity,
+                        note: `Hoàn kho do hủy đơn hàng ${id}`,
+                        createdBy: userId
+                    });
+                }
+            }
+            */
 
             return finalUpdatedOrder;
         });
@@ -824,7 +906,10 @@ export class OrdersService {
                     ward: true,
                     upgradedFrom: { select: { id: true } },
                 },
-                orderBy: { orderDate: 'desc' },
+                orderBy: [
+                    { orderDate: 'desc' },
+                    { createdAt: 'desc' }
+                ],
                 skip,
                 take,
             }),
@@ -921,6 +1006,20 @@ export class OrdersService {
                     oldData: order as any,
                 },
             });
+
+            // Reversal of Stock
+            if (order.status !== 'canceled') {
+                for (const item of order.items) {
+                    await this.stocksService.createTransaction({
+                        type: TransactionType.RETURN,
+                        toBranchId: order.branchId,
+                        productId: item.productId,
+                        quantity: item.quantity,
+                        note: `Hoàn kho do xóa đơn hàng ${id}`,
+                        createdBy: userId
+                    });
+                }
+            }
 
             await tx.order.delete({
                 where: { id },

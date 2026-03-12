@@ -24,17 +24,102 @@ model Branch {
   longitude     Float? // Kinh độ trung tâm chi nhánh
   checkinRadius Int    @default(70) @map("checkin_radius") // Bán kính cho phép (mét)
 
+  branchType    BranchType @default(CHI_NHANH) @map("branch_type")
+  
   employees          Employee[]
   orders             Order[]
   orderSplits        OrderSplit[]
   managerSalaryRules BranchManagerSalaryRule[]
   deliveryFeeRules   DeliveryFeeRule[]
+  
+  // 🆕 Relations cho tồn kho
+  stocks             BranchStock[]
+  stockItems         StockItem[]
+  fromTransactions   StockTransaction[] @relation("FromBranch")
+  toTransactions     StockTransaction[] @relation("ToBranch")
 
   // 🆕 Relations cho chấm công
   attendances Attendance[]
   workShifts  WorkShift[]
 
   @@map("branches")
+}
+
+enum BranchType {
+  KHO_TONG
+  CHI_NHANH
+}
+
+// 🟦 branch_stocks – Tồn kho tổng hợp theo chi nhánh
+model BranchStock {
+  id        String   @id @default(uuid()) @db.Uuid
+  branchId  String   @map("branch_id") @db.Uuid
+  productId String   @map("product_id") @db.Uuid
+  quantity  Int      @default(0)
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  branch  Branch  @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([branchId, productId])
+  @@map("branch_stocks")
+}
+
+// 🟦 stock_items – Chi tiết từng máy theo Serial
+model StockItem {
+  id           String          @id @default(uuid()) @db.Uuid
+  productId    String          @map("product_id") @db.Uuid
+  branchId     String          @map("branch_id") @db.Uuid
+  serialNumber String          @unique @map("serial_number")
+  status       StockItemStatus @default(AVAILABLE)
+  note         String?         @db.Text
+  createdAt    DateTime        @default(now()) @map("created_at")
+  updatedAt    DateTime        @updatedAt @map("updated_at")
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  branch  Branch  @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@map("stock_items")
+}
+
+enum StockItemStatus {
+  AVAILABLE
+  PENDING_TRANSFER
+  SOLD
+  RETRIEVED
+  ERROR
+}
+
+// 🟦 stock_transactions – Nhật ký biến động kho
+model StockTransaction {
+  id           String          @id @default(uuid()) @db.Uuid
+  code         String          @unique // NK..., XK..., CK..., TH...
+  type         TransactionType
+  fromBranchId String?         @map("from_branch_id") @db.Uuid
+  toBranchId   String?         @map("to_branch_id") @db.Uuid
+  productId    String          @map("product_id") @db.Uuid
+  quantity     Int
+  serialNumbers String[]        @default([]) @map("serial_numbers")
+  note         String?         @db.Text
+  createdBy    String          @map("created_by") @db.Uuid
+  createdAt    DateTime        @default(now()) @map("created_at")
+
+  fromBranch Branch? @relation("FromBranch", fields: [fromBranchId], references: [id])
+  toBranch   Branch? @relation("ToBranch", fields: [toBranchId], references: [id])
+  product    Product @relation(fields: [productId], references: [id])
+  creator    User    @relation(fields: [createdBy], references: [id])
+
+  @@map("stock_transactions")
+}
+
+enum TransactionType {
+  IMPORT         // Nhập mới
+  EXPORT         // Xuất kho
+  TRANSFER       // Chuyển kho
+  SALE           // Bán hàng (trừ kho)
+  RETURN         // Khách trả hàng (hoàn kho)
+  UPGRADE_RETURN // Thu hồi máy cũ từ đơn nâng cấp
+  ADJUST         // Điều chỉnh kho (kiểm kho)
 }
 
 // 🟦 roles – Vai trò hệ thống
@@ -68,6 +153,7 @@ model User {
   ordersCreated        Order[]
   ordersConfirmed      Order[]   @relation("OrderConfirmer")
   ordersIssuedInvoices Order[]   @relation("OrderInvoiceIssuer")
+  stockTransactions    StockTransaction[]
 
   @@map("users")
 }
@@ -264,8 +350,11 @@ model Product {
   hotBonus  Decimal  @default(0) @map("hot_bonus") @db.Decimal(20, 2)
   createdAt DateTime @default(now()) @map("created_at")
 
-  orderItems OrderItem[]
-  bonusRules ProductBonusRule[]
+  orderItems        OrderItem[]
+  bonusRules        ProductBonusRule[]
+  branchStocks      BranchStock[]
+  stockItems        StockItem[]
+  stockTransactions StockTransaction[]
 
   @@map("products")
 }

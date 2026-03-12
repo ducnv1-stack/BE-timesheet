@@ -72,4 +72,15 @@ export class AttendanceController {
     async deleteShift(@Param('id') id: string) {
         return this.attendanceService.deleteShift(id);
     }
+
+    @Patch('adjust')
+    async adjustAttendance(@Body() data: {
+        employeeId: string;
+        date: string;
+        checkInTime?: string;
+        checkOutTime?: string;
+        note?: string;
+    }) {
+        return this.attendanceService.adjustAttendance(data);
+    }
 }

@@ -24,8 +24,9 @@ export class AttendanceService {
 
     // Lấy trạng thái chấm công của nhân viên hôm nay
     async getTodayStatus(employeeId: string) {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
+        // Lấy ngày hôm nay theo giờ VN
+        const nowVN = new Date(new Date().getTime() + 7 * 3600000);
+        const today = new Date(Date.UTC(nowVN.getUTCFullYear(), nowVN.getUTCMonth(), nowVN.getUTCDate()));
 
         const attendance = await this.prisma.attendance.findUnique({
             where: {
@@ -46,8 +47,8 @@ export class AttendanceService {
     // Xử lý Check-in
     async checkIn(employeeId: string, dto: CheckInDto) {
         const now = new Date();
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
+        const nowVN = new Date(now.getTime() + 7 * 3600000);
+        const today = new Date(Date.UTC(nowVN.getUTCFullYear(), nowVN.getUTCMonth(), nowVN.getUTCDate()));
 
         // Lấy thông tin nhân viên và chi nhánh
         const employee = await this.prisma.employee.findUnique({
@@ -77,7 +78,7 @@ export class AttendanceService {
             throw new BadRequestException('Bạn đã chấm công vào hôm nay rồi');
         }
 
-        // Kiểm tra số lần thử (Ghi nhận nhưng không giới hạn nữa theo yêu cầu)
+        // Kiểm tra số lần thử
         const attemptCount = attendance ? attendance.checkInAttempts + 1 : 1;
 
         if (!isWithinRange) {
@@ -101,7 +102,6 @@ export class AttendanceService {
         }
 
         // Nếu trong phạm vi, thực hiện check-in thành công
-        // Lấy ca làm việc mặc định (giả sử ca đầu tiên của chi nhánh)
         const shift = await this.prisma.workShift.findFirst({
             where: { branchId: employee.branchId, isActive: true },
         });
@@ -111,8 +111,8 @@ export class AttendanceService {
 
         if (shift) {
             const [startH, startM] = shift.startTime.split(':').map(Number);
-            const shiftStartTime = new Date(today);
-            shiftStartTime.setHours(startH, startM, 0, 0);
+            // shiftStartTime là thời điểm UTC tương ứng với giờ bắt đầu tại VN (UTC + 7)
+            const shiftStartTime = new Date(today.getTime() + (startH - 7) * 3600000 + startM * 60000);
 
             const diffMinutes = Math.floor((now.getTime() - shiftStartTime.getTime()) / 60000);
 
@@ -125,7 +125,7 @@ export class AttendanceService {
             }
         }
 
-        const dailyStatus = checkInStatus === 'ON_TIME' ? 'FULL_DAY' : 'LATE_DAY'; // Logic đơn giản, có thể mở rộng
+        const dailyStatus = checkInStatus === 'ON_TIME' ? 'FULL_DAY' : 'LATE_DAY';
 
         if (!attendance) {
             return this.prisma.attendance.create({
@@ -169,8 +169,8 @@ export class AttendanceService {
     // Xử lý Check-out
     async checkOut(employeeId: string, dto: CheckOutDto) {
         const now = new Date();
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
+        const nowVN = new Date(now.getTime() + 7 * 3600000);
+        const today = new Date(Date.UTC(nowVN.getUTCFullYear(), nowVN.getUTCMonth(), nowVN.getUTCDate()));
 
         const attendance = await this.prisma.attendance.findUnique({
             where: { employeeId_date: { employeeId, date: today } },
@@ -183,11 +183,6 @@ export class AttendanceService {
 
         if (attendance.checkOutTime) {
             throw new BadRequestException('Bạn đã check-out hôm nay rồi');
-        }
-
-        // Kiểm tra tọa độ chi nhánh
-        if (attendance.employee.branch.latitude === null || attendance.employee.branch.longitude === null) {
-            throw new BadRequestException('Chi nhánh chưa được cấu hình tọa độ GPS');
         }
 
         // Tính khoảng cách
@@ -210,15 +205,14 @@ export class AttendanceService {
 
         if (attendance.shift) {
             const [endH, endM] = attendance.shift.endTime.split(':').map(Number);
-            const shiftEndTime = new Date(today);
-            shiftEndTime.setHours(endH, endM, 0, 0);
+            const shiftEndTime = new Date(today.getTime() + (endH - 7) * 3600000 + endM * 60000);
 
             const diffMinutes = Math.floor((now.getTime() - shiftEndTime.getTime()) / 60000);
 
             if (diffMinutes < -attendance.shift.earlyLeaveThreshold) {
                 checkOutStatus = 'EARLY_LEAVE';
                 earlyLeaveMinutes = Math.abs(diffMinutes);
-            } else if (diffMinutes >= 30) { // Tối thiểu 30p mới tính tăng ca
+            } else if (diffMinutes >= 30) {
                 checkOutStatus = 'OVERTIME';
                 overtimeMinutes = diffMinutes;
             }
@@ -245,8 +239,8 @@ export class AttendanceService {
 
     // Lấy bảng công tháng
     async getMonthlyTimesheet(employeeId: string, month: number, year: number) {
-        const startDate = new Date(year, month - 1, 1);
-        const endDate = new Date(year, month, 0);
+        const startDate = new Date(Date.UTC(year, month - 1, 1));
+        const endDate = new Date(Date.UTC(year, month, 0));
 
         return this.prisma.attendance.findMany({
             where: {
@@ -261,12 +255,11 @@ export class AttendanceService {
         });
     }
 
-    // Lấy bảng tổng hợp công của nhiều nhân viên trong tháng
+    // Lấy bảng tổng hợp công
     async getMonthlySummary(month: number, year: number, branchId?: string, search?: string, position?: string) {
-        const startDate = new Date(year, month - 1, 1);
-        const endDate = new Date(year, month, 0);
+        const startDate = new Date(Date.UTC(year, month - 1, 1));
+        const endDate = new Date(Date.UTC(year, month, 0));
 
-        // 1. Lấy danh sách nhân viên thỏa mãn điều kiện (không nghỉ việc)
         const employees = await this.prisma.employee.findMany({
             where: {
                 status: { not: 'Nghỉ việc' },
@@ -292,7 +285,6 @@ export class AttendanceService {
 
         const employeeIds = employees.map(e => e.id);
 
-        // 2. Lấy dữ liệu chấm công của các nhân viên này trong tháng
         const attendanceRecords = await this.prisma.attendance.findMany({
             where: {
                 employeeId: { in: employeeIds },
@@ -303,7 +295,6 @@ export class AttendanceService {
             }
         });
 
-        // 3. Tính toán tổng kết cho từng nhân viên
         const summary = employees.map(emp => {
             const empAttendance = attendanceRecords.filter(a => a.employeeId === emp.id);
 
@@ -388,7 +379,6 @@ export class AttendanceService {
         const shift = await this.prisma.workShift.findUnique({ where: { id } });
         if (!shift) throw new NotFoundException('Không tìm thấy ca làm việc');
 
-        // Check if any attendance records reference this shift
         const count = await this.prisma.attendance.count({ where: { shiftId: id } });
         if (count > 0) {
             throw new BadRequestException(`Ca làm việc này đang được sử dụng bởi ${count} bản ghi chấm công. Hãy vô hiệu hóa thay vì xóa.`);
@@ -396,5 +386,126 @@ export class AttendanceService {
 
         await this.prisma.workShift.delete({ where: { id } });
         return { message: 'Đã xóa ca làm việc' };
+    }
+
+    // Hiệu chỉnh công thủ công
+    async adjustAttendance(data: {
+        employeeId: string;
+        date: string; // ISO string
+        checkInTime?: string; // ISO string hoặc null
+        checkOutTime?: string; // ISO string hoặc null
+        note?: string;
+    }) {
+        // 1. Xác định targetDate (00:00:00 UTC của ngày local VN)
+        const dateVN = new Date(new Date(data.date).getTime() + 7 * 3600000);
+        const targetDate = new Date(Date.UTC(dateVN.getUTCFullYear(), dateVN.getUTCMonth(), dateVN.getUTCDate()));
+
+        const employee = await this.prisma.employee.findUnique({
+            where: { id: data.employeeId },
+            include: { branch: true }
+        });
+
+        if (!employee) throw new NotFoundException('Không tìm thấy nhân viên');
+
+        let attendance = await this.prisma.attendance.findUnique({
+            where: { employeeId_date: { employeeId: data.employeeId, date: targetDate } },
+            include: { shift: true }
+        });
+
+        let shift = attendance?.shift;
+        if (!shift) {
+            shift = await this.prisma.workShift.findFirst({
+                where: { branchId: employee.branchId, isActive: true },
+            });
+        }
+
+        let lateMinutes = 0;
+        let earlyLeaveMinutes = 0;
+        let overtimeMinutes = 0;
+        let checkInStatus = 'ON_TIME';
+        let checkOutStatus = 'ON_TIME';
+        let totalWorkMinutes = 0;
+
+        // 2. Chuyển đổi giờ vào/ra từ Local VN sang UTC để tính toán
+        // Sử dụng concat '+07:00' để ép parse theo múi giờ VN, bất kể múi giờ server
+        const checkInDate = data.checkInTime ? new Date(data.checkInTime + ':00+07:00') : null;
+        const checkOutDate = data.checkOutTime ? new Date(data.checkOutTime + ':00+07:00') : null;
+
+        if (shift) {
+            const [startH, startM] = shift.startTime.split(':').map(Number);
+            const shiftStartTime = new Date(targetDate.getTime() + (startH - 7) * 3600000 + startM * 60000);
+
+            if (checkInDate) {
+                const diffIn = Math.floor((checkInDate.getTime() - shiftStartTime.getTime()) / 60000);
+                if (diffIn > shift.lateSeriousThreshold) {
+                    checkInStatus = 'LATE_SERIOUS';
+                    lateMinutes = diffIn;
+                } else if (diffIn > shift.lateThreshold) {
+                    checkInStatus = 'LATE';
+                    lateMinutes = diffIn;
+                }
+            }
+
+            if (checkOutDate) {
+                const [endH, endM] = shift.endTime.split(':').map(Number);
+                const shiftEndTime = new Date(targetDate.getTime() + (endH - 7) * 3600000 + endM * 60000);
+
+                const diffOut = Math.floor((checkOutDate.getTime() - shiftEndTime.getTime()) / 60000);
+                if (diffOut < -shift.earlyLeaveThreshold) {
+                    checkOutStatus = 'EARLY_LEAVE';
+                    earlyLeaveMinutes = Math.abs(diffOut);
+                } else if (diffOut >= 30) {
+                    checkOutStatus = 'OVERTIME';
+                    overtimeMinutes = diffOut;
+                }
+            }
+        }
+
+        if (checkInDate && checkOutDate) {
+            totalWorkMinutes = Math.floor((checkOutDate.getTime() - checkInDate.getTime()) / 60000);
+        }
+
+        const dailyStatus = (checkInStatus.startsWith('LATE') || checkOutStatus === 'EARLY_LEAVE') ? 'INCOMPLETE' : 'FULL_DAY';
+
+        if (!attendance) {
+            return this.prisma.attendance.create({
+                data: {
+                    employeeId: data.employeeId,
+                    branchId: employee.branchId,
+                    date: targetDate,
+                    shiftId: shift?.id,
+                    checkInTime: checkInDate,
+                    checkInStatus,
+                    checkInMethod: 'MANUAL',
+                    lateMinutes,
+                    checkOutTime: checkOutDate,
+                    checkOutStatus,
+                    checkOutMethod: 'MANUAL',
+                    earlyLeaveMinutes,
+                    overtimeMinutes,
+                    totalWorkMinutes,
+                    dailyStatus,
+                    note: `[Đã hiệu chỉnh] ${data.note || ''}`,
+                }
+            });
+        } else {
+            return this.prisma.attendance.update({
+                where: { id: attendance.id },
+                data: {
+                    checkInTime: checkInDate,
+                    checkInStatus,
+                    checkInMethod: 'MANUAL',
+                    lateMinutes,
+                    checkOutTime: checkOutDate,
+                    checkOutStatus,
+                    checkOutMethod: 'MANUAL',
+                    earlyLeaveMinutes,
+                    overtimeMinutes,
+                    totalWorkMinutes,
+                    dailyStatus,
+                    note: `${attendance.note || ''} | [Đã hiệu chỉnh] ${data.note || ''}`,
+                }
+            });
+        }
     }
 }

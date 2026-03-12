@@ -15,6 +15,7 @@ import { RolesModule } from './roles/roles.module';
 import { AddressesModule } from './addresses/addresses.module';
 import { AttendanceModule } from './attendance/attendance.module';
 import { DeliveryFeeRulesModule } from './delivery-fee-rules/delivery-fee-rules.module';
+import { StocksModule } from './stocks/stocks.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { DeliveryFeeRulesModule } from './delivery-fee-rules/delivery-fee-rules.
     AddressesModule,
     AttendanceModule,
     DeliveryFeeRulesModule,
+    StocksModule,
   ],
   controllers: [AppController],
   providers: [AppService],
