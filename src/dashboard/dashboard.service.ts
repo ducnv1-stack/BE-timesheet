@@ -487,7 +487,7 @@ export class DashboardService {
         const { startDate, endDate, orderStartDate, orderEndDate } = this.getVNDateBounds(startStr, endStr);
 
         const currentEmployees = await this.prisma.employee.findMany({
-            where: { branchId, status: 'active' },
+            where: { branchId, status: 'Đang làm việc' },
             select: { id: true }
         });
         const currentEmployeeIds = currentEmployees.map(e => e.id);
@@ -497,7 +497,6 @@ export class DashboardService {
         const branchSalesSplits = await this.prisma.orderSplit.findMany({
             where: {
                 branchId,
-                employeeId: { in: currentEmployeeIds },
                 order: {
                     status: { notIn: ['canceled', 'rejected'] },
                     orderDate: { gte: orderStartDate, lte: orderEndDate }
@@ -550,10 +549,13 @@ export class DashboardService {
         let lowPriceRevenue = 0;
 
         for (const split of branchOrders) {
-            for (const item of split.order.items) {
+            const order = split.order;
+            const shareRatio = Number(split.splitAmount) / Number(order.totalAmount || 1);
+
+            for (const item of order.items) {
                 if (item.isBelowMin) {
                     lowPriceOrderCount++;
-                    lowPriceRevenue += Number(item.totalPrice);
+                    lowPriceRevenue += Number(item.totalPrice) * shareRatio;
                 }
             }
         }

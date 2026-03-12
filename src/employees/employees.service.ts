@@ -405,15 +405,54 @@ export class EmployeesService {
         const branchGrossRevenue = branchOrdersCreated.reduce((sum, o) => sum + Number(o.totalAmount), 0);
 
         if (isManager) {
-            // MANAGER LOGIC
+            // MANAGER LOGIC — Thống nhất dùng OrderSplit giống Dashboard để khớp số liệu
             const rules = await this.prisma.branchManagerSalaryRule.findMany({
                 where: { branchId: employee.branchId },
                 orderBy: { targetRevenue: 'desc' }
             });
 
-            totalRevenue = branchTotalRevenue;
-            grossRevenue = branchGrossRevenue;
-            totalOrders = branchTotalOrders;
+            // 1. Doanh số hoàn thành (Confirmed)
+            const branchSplits = await this.prisma.orderSplit.findMany({
+                where: {
+                    branchId: employee.branchId,
+                    order: {
+                        isPaymentConfirmed: true,
+                        status: { notIn: ['canceled', 'rejected'] },
+                        confirmedAt: { gte: startDate, lte: endDate }
+                    }
+                },
+                include: {
+                    order: {
+                        include: {
+                            items: { include: { product: true } },
+                            deliveries: true
+                        }
+                    }
+                }
+            });
+
+            // 2. Doanh số bán (Created/OrderDate)
+            const branchSalesSplits = await this.prisma.orderSplit.findMany({
+                where: {
+                    branchId: employee.branchId,
+                    order: {
+                        status: { notIn: ['canceled', 'rejected'] },
+                        orderDate: { gte: orderStartDate, lte: orderEndDate }
+                    }
+                }
+            });
+
+            totalRevenue = branchSplits.reduce((sum, s) => sum + Number(s.splitAmount), 0);
+            grossRevenue = branchSalesSplits.reduce((sum, s) => sum + Number(s.splitAmount), 0);
+            
+            // Đơn bán: Chỉ tính đơn thuộc chi nhánh chủ quản
+            totalOrders = await this.prisma.order.count({
+                where: {
+                    branchId: employee.branchId,
+                    status: { notIn: ['canceled', 'rejected'] },
+                    orderDate: { gte: orderStartDate, lte: orderEndDate }
+                }
+            });
 
             const achievedRule = rules.find(r => totalRevenue >= Number(r.targetRevenue));
             if (achievedRule) {
@@ -423,18 +462,21 @@ export class EmployeesService {
                 milestone = Number(achievedRule.targetRevenue);
             }
 
-            // Manager Hot Bonus & Low Price from ALL branch orders
-            for (const o of branchOrders) {
-                for (const item of o.items) {
+            // Manager Hot Bonus & Low Price from branch splits (có nhân tỉ lệ chia sẻ)
+            for (const split of branchSplits) {
+                const order = split.order;
+                const shareRatio = Number(split.splitAmount) / Number(order.totalAmount || 1);
+
+                for (const item of order.items) {
                     if (item.product.isHighEnd && item.managerBonusAmount) {
-                        hotBonus += Number(item.managerBonusAmount) * item.quantity;
+                        hotBonus += Number(item.managerBonusAmount) * item.quantity * shareRatio;
                     }
                     if (item.isBelowMin) {
-                        lowPriceValue += Number(item.totalPrice);
+                        lowPriceValue += Number(item.totalPrice) * shareRatio;
                     }
                 }
+                shippingFee += order.deliveries.reduce((ds, d) => ds + Number(d.deliveryFee || 0), 0) * shareRatio;
             }
-            shippingFee = branchOrders.reduce((s, o) => s + o.deliveries.reduce((ds, d) => ds + Number(d.deliveryFee || 0), 0), 0);
 
             lowPriceRatio = totalRevenue > 0 ? (lowPriceValue / totalRevenue) : 0;
             isPenalty = lowPriceRatio >= 0.2;
