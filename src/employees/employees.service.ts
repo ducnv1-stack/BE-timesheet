@@ -19,6 +19,7 @@ export class EmployeesService {
         department?: string;
         positionId?: string;
         departmentId?: string;
+        roleId?: string;
         hasAccount?: 'true' | 'false';
         userId?: string;
         roleCode?: string;
@@ -70,6 +71,12 @@ export class EmployeesService {
 
         if ((query as any).departmentId) {
             where.departmentId = (query as any).departmentId;
+        }
+
+        if (query.roleId) {
+            where.user = {
+                roleId: query.roleId
+            };
         }
 
         // Filter by account existence
@@ -130,7 +137,7 @@ export class EmployeesService {
     }
 
     async findOne(id: string) {
-        const employee = await this.prisma.employee.findUnique({
+        let employee = await this.prisma.employee.findUnique({
             where: { id },
             include: {
                 branch: true,
@@ -157,8 +164,38 @@ export class EmployeesService {
             },
         });
 
+        // Fallback: If not found by employee ID, try searching by user ID
         if (!employee) {
-            throw new NotFoundException(`Employee with ID ${id} not found`);
+            employee = await this.prisma.employee.findFirst({
+                where: { userId: id },
+                include: {
+                    branch: true,
+                    pos: { 
+                        include: { 
+                            attendancePolicy: {
+                                include: { days: true }
+                            } 
+                        } 
+                    },
+                    dept: true,
+                    attendancePolicy: {
+                        include: { days: true }
+                    },
+                    user: {
+                        select: {
+                            id: true,
+                            username: true,
+                            isActive: true,
+                            createdAt: true,
+                            role: true,
+                        }
+                    }
+                },
+            });
+        }
+
+        if (!employee) {
+            throw new NotFoundException(`Employee with ID or User ID ${id} not found`);
         }
 
         return employee;
@@ -242,7 +279,11 @@ export class EmployeesService {
         return updated;
     }
 
-    async remove(id: string) {
+    async remove(id: string, roleCode?: string) {
+        if (roleCode !== 'ADMIN') {
+            throw new BadRequestException('Chỉ có quản trị viên mới có quyền xóa nhân viên');
+        }
+
         const employee = await this.findOne(id);
 
         // Delete employee first - this will trigger CASCADE deletes for Attendance, OrderSplits, etc.
@@ -264,6 +305,24 @@ export class EmployeesService {
         }
 
         return { message: 'Nhân viên và dữ liệu liên quan đã được xóa vĩnh viễn' };
+    }
+
+    async getAccountSummary() {
+        const roles = await this.prisma.role.findMany({
+            include: {
+                _count: {
+                    select: { users: true }
+                }
+            },
+            orderBy: { name: 'asc' }
+        });
+
+        return roles.map(role => ({
+            id: role.id,
+            code: role.code,
+            name: role.name,
+            count: role._count.users
+        }));
     }
 
     // ========== ACCOUNT MANAGEMENT ==========

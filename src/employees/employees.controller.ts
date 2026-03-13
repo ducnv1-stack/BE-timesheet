@@ -38,6 +38,7 @@ export class EmployeesController {
         @Query('department') department?: string,
         @Query('positionId') positionId?: string,
         @Query('departmentId') departmentId?: string,
+        @Query('roleId') roleId?: string,
         @Query('hasAccount') hasAccount?: 'true' | 'false',
         @Query('userId') userId?: string,
         @Query('roleCode') roleCode?: string,
@@ -49,10 +50,16 @@ export class EmployeesController {
             department,
             positionId,
             departmentId,
+            roleId,
             hasAccount,
             userId,
             roleCode,
         });
+    }
+
+    @Get('account-summary')
+    getAccountSummary() {
+        return this.employeesService.getAccountSummary();
     }
 
     @Get('export')
@@ -159,8 +166,11 @@ export class EmployeesController {
     }
 
     @Delete(':id')
-    remove(@Param('id') id: string) {
-        return this.employeesService.remove(id);
+    remove(
+        @Param('id') id: string,
+        @Query('roleCode') roleCode?: string,
+    ) {
+        return this.employeesService.remove(id, roleCode);
     }
 
     // ========== ACCOUNT MANAGEMENT ENDPOINTS ==========
