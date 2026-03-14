@@ -1219,11 +1219,8 @@ export class DashboardService {
             }
         });
 
-        // 2. Calculate Basic Stats
-        const systemRevenue = orders.reduce((sum, o) => {
-            const netOrderRevenue = Number(o.totalAmount) - Number(o.giftAmount || 0);
-            return sum + netOrderRevenue;
-        }, 0);
+        // 2. Calculate Basic Stats (Sử dụng Gross Amount để đồng bộ với Giám đốc/Kế toán)
+        const systemRevenue = orders.reduce((sum, o) => sum + Number(o.totalAmount), 0);
 
         // Doanh số bán toàn hệ thống (Dùng để hiển thị, vẫn là Gross)
         const systemSalesResult = await this.prisma.order.aggregate({
@@ -1243,19 +1240,57 @@ export class DashboardService {
             }
         });
         const baseSalary = 6000000;
+        
+        // Tính hoa hồng trên doanh thu thực tế (sau khi trừ quà tặng nếu cần) 
+        // hoặc tính trên doanh thu gộp để đồng bộ hiển thị. 
+        // Ở đây chọn tính trên gross để khớp với "Tiền về hệ thống" đang hiển thị.
         const commission = systemRevenue * 0.002;
 
         // 3. Branch Stats
-        const branchMap = new Map();
-        orders.forEach(o => {
-            const bName = o.branch.name;
-            const netOrderRevenue = Number(o.totalAmount) - Number(o.giftAmount || 0);
-            const current = branchMap.get(bName) || { name: bName, revenue: 0, orderCount: 0 };
-            current.revenue += netOrderRevenue;
-            current.orderCount += 1;
-            branchMap.set(bName, current);
-        });
-        const branchStats = Array.from(branchMap.values()).sort((a, b) => b.revenue - a.revenue);
+        const branches = await this.prisma.branch.findMany();
+
+        const branchStats = await Promise.all(branches.map(async (b) => {
+            // Doanh số bán (Tất cả đơn trong kỳ)
+            const salesResult = await this.prisma.order.aggregate({
+                where: {
+                    branchId: b.id,
+                    status: { notIn: ['canceled', 'rejected'] },
+                    orderDate: { gte: orderStartDate, lte: orderEndDate }
+                },
+                _sum: { totalAmount: true }
+            });
+            const branchSalesRevenue = Number(salesResult._sum.totalAmount || 0);
+
+            // Doanh số hoàn thành (Đơn đã xác nhận trong kỳ)
+            const revenueResult = await this.prisma.order.aggregate({
+                where: {
+                    branchId: b.id,
+                    isPaymentConfirmed: true,
+                    status: { notIn: ['canceled', 'rejected'] },
+                    orderDate: { gte: orderStartDate, lte: orderEndDate }
+                },
+                _sum: { totalAmount: true }
+            });
+            const branchRevenue = Number(revenueResult._sum.totalAmount || 0);
+
+            // Đếm số đơn bán
+            const salesOrderCount = await this.prisma.order.count({
+                where: {
+                    branchId: b.id,
+                    status: { notIn: ['canceled', 'rejected'] },
+                    orderDate: { gte: orderStartDate, lte: orderEndDate }
+                }
+            });
+
+            return {
+                id: b.id,
+                name: b.name,
+                salesRevenue: branchSalesRevenue,
+                revenue: branchRevenue,
+                orderCount: salesOrderCount
+            };
+        }));
+        branchStats.sort((a, b) => b.salesRevenue - a.salesRevenue);
 
         // 4. Best Sellers (Lấy theo orderDate toàn bộ hệ thống)
         const productMap = new Map();
