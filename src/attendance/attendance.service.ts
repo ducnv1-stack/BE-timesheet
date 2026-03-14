@@ -1,10 +1,14 @@
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CheckInDto, CheckOutDto } from './dto/attendance.dto';
+import { AttendanceCalculatorService, AttendanceConfig } from './attendance-calculator.service';
 
 @Injectable()
 export class AttendanceService {
-    constructor(private prisma: PrismaService) { }
+    constructor(
+        private prisma: PrismaService,
+        private calculator: AttendanceCalculatorService,
+    ) { }
 
     // Tính khoảng cách giữa 2 điểm GPS (mét) bằng công thức Haversine
     private calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -112,23 +116,44 @@ export class AttendanceService {
         const policyInfo = await this.getPolicyForDayExplicit(employeeId, vnDayOfWeek);
         const policyDay = policyInfo?.day;
         const policy = policyInfo?.policy;
+        const configData = (policy as any)?.configData as AttendanceConfig | null;
         
-        // 1. Kiểm tra Ngày nghỉ
-        if (policyDay?.isOff) {
+        // 1. Kiểm tra Ngày nghỉ: Chỉ chặn nếu không có cấu hình OT và không dùng Engine mới
+        if (policyDay?.isOff && !configData?.overtime_rules?.is_allowed) {
             throw new BadRequestException('Hôm nay là ngày nghỉ theo quy định của bạn');
         }
 
-        // 2. Kiểm tra GPS (nếu chính sách yêu cầu hoặc mặc định là có)
-        const requiresGPS = policyDay ? policyDay.requireGPS : true;
+        // 2. Tự động đóng các ca quên checkout của ngày hôm trước (Auto-Reset)
+        await this.prisma.attendance.updateMany({
+            where: {
+                employeeId,
+                date: { lt: today },
+                checkOutTime: null
+            },
+            data: {
+                checkOutStatus: 'MISSING_OUT',
+                dailyStatus: 'INVALID'
+            }
+        });
+
+        // 3. Kiểm tra GPS (nối kết hợp chính sách tổng quát và cài đặt từng ngày)
+        const requiresGPS = policyDay 
+            ? (policyDay as any).requireGPS 
+            : ((policy as any)?.requireGPS ?? true);
+        
+        // Xác định tọa độ và bán kính mục tiêu
+        // Nếu chính sách KHÔNG có tọa độ -> Dùng của chi nhánh (bao gồm cả bán kính)
+        // Nếu chính sách CÓ tọa độ -> Dùng của chính sách (bao gồm cả bán kính)
+        const targetLat = policy?.latitude || employee.branch.latitude;
+        const targetLon = policy?.longitude || employee.branch.longitude;
+        const targetRadius = (policy?.latitude && policy?.longitude) 
+            ? (policy?.radius ?? 200) 
+            : employee.branch.checkinRadius;
+
         let distance = 0;
         let isWithinRange = true;
 
         if (requiresGPS) {
-            // Ưu tiên GPS của chính sách, sau đó mới đến chi nhánh
-            const targetLat = policy?.latitude ?? employee.branch.latitude;
-            const targetLon = policy?.longitude ?? employee.branch.longitude;
-            const targetRadius = policy?.radius ?? employee.branch.checkinRadius;
-
             if (!targetLat || !targetLon) {
                 throw new BadRequestException('Vị trí chấm công (Chi nhánh/Chính sách) chưa được cấu hình tọa độ GPS');
             }
@@ -177,17 +202,24 @@ export class AttendanceService {
         let shiftId: string | undefined = undefined;
         let attendancePolicyDayId: string | undefined = undefined;
 
-        if (policyDay) {
+        // 🚀 NEW ENGINE: Nếu policy có configData -> dùng Engine mới
+
+
+        if (configData) {
+            // Dùng Engine mới để tính check-in status
+            attendancePolicyDayId = policyDay?.id;
+            const engineResult = this.calculator.evaluateCheckIn(configData, now);
+            checkInStatus = engineResult.checkInStatus;
+            lateMinutes = engineResult.lateMinutes;
+        } else if (policyDay) {
+            // LEGACY: Giữ nguyên logic cũ khi chưa có configData
             attendancePolicyDayId = policyDay.id;
 
             if (policyDay.isFlexible) {
-                // 🚀 Chế độ LINH HOẠT: Mặc định đúng giờ, không tính muộn
                 checkInStatus = 'ON_TIME';
                 lateMinutes = 0;
             } else {
                 const [startH, startM] = policyDay.startTime.split(':').map(Number);
-                
-                // Giờ bắt đầu tính theo VN (UTC+7)
                 const policyStartTimeUTC = new Date(today.getTime() + (startH - 7) * 3600000 + startM * 60000);
                 const diffMinutes = Math.floor((now.getTime() - policyStartTimeUTC.getTime()) / 60000);
                 
@@ -277,18 +309,26 @@ export class AttendanceService {
         }
 
         // 1. Kiểm tra GPS (nếu quy tắc yêu cầu)
-        const requiresGPS = attendance.policyDay ? attendance.policyDay.requireGPS : true;
+        // Lấy thông tin chính sách để kiểm tra requireGPS tổng quát
+        const policyInfo = await this.getPolicyForDayExplicit(employeeId, vnDayOfWeek);
+        const policy = policyInfo?.policy;
+
+        const policyDay = attendance.policyDay || (policyInfo?.day as any);
+        const requiresGPS = policyDay 
+            ? policyDay.requireGPS 
+            : ((policy as any)?.requireGPS ?? true);
+
+        // Xác định tọa độ và bán kính mục tiêu (giống logic check-in)
+        const targetLat = policy?.latitude || attendance.employee.branch.latitude;
+        const targetLon = policy?.longitude || attendance.employee.branch.longitude;
+        const targetRadius = (policy?.latitude && policy?.longitude) 
+            ? (policy?.radius ?? 200) 
+            : attendance.employee.branch.checkinRadius;
+
         let distance = 0;
+        let isWithinRange = true;
 
         if (requiresGPS) {
-            // Lấy lại policy để có thông tin GPS override
-            const policyInfo = await this.getPolicyForDayExplicit(employeeId, vnDayOfWeek);
-            const policy = policyInfo?.policy;
-
-            const targetLat = policy?.latitude ?? attendance.employee.branch.latitude;
-            const targetLon = policy?.longitude ?? attendance.employee.branch.longitude;
-            const targetRadius = policy?.radius ?? attendance.employee.branch.checkinRadius;
-
             if (!targetLat || !targetLon) {
                 throw new BadRequestException('Vị trí chấm công (Chi nhánh/Chính sách) chưa được cấu hình tọa độ GPS');
             }
@@ -297,6 +337,7 @@ export class AttendanceService {
                 dto.latitude, dto.longitude,
                 targetLat, targetLon
             );
+            
             if (distance > targetRadius) {
                 throw new BadRequestException(`Ngoài phạm vi cho phép (${distance}m) để Check-out. Vui lòng di chuyển lại gần chi nhánh/điểm chấm công.`);
             }
@@ -306,41 +347,33 @@ export class AttendanceService {
         let checkOutStatus = 'ON_TIME';
         let earlyLeaveMinutes = 0;
         let overtimeMinutes = 0;
+        let totalWorkMinutes = 0;
+        let dailyStatus = attendance.dailyStatus || 'FULL_DAY';
 
-        if (attendance.policyDay) {
-            if (attendance.policyDay.isFlexible) {
-                // 🚀 Chế độ LINH HOẠT: Mặc định đúng giờ, không tính sớm/OT
-                checkOutStatus = 'ON_TIME';
-                earlyLeaveMinutes = 0;
-                overtimeMinutes = 0;
-            } else {
-                const [endH, endM] = attendance.policyDay.endTime.split(':').map(Number);
-                const policyEndTimeUTC = new Date(today.getTime() + (endH - 7) * 3600000 + endM * 60000);
-                const diffMinutes = Math.floor((now.getTime() - policyEndTimeUTC.getTime()) / 60000);
+        // 🚀 NEW ENGINE: Nếu policy có configData -> dùng Engine mới
+        const configData = (policy as any)?.configData as AttendanceConfig | null;
 
-                if (diffMinutes < -15) { // Ngưỡng mặc định 15p
-                    checkOutStatus = 'EARLY_LEAVE';
-                    earlyLeaveMinutes = Math.abs(diffMinutes);
-                } else if (diffMinutes >= 30 && attendance.policyDay.allowOT) {
-                    checkOutStatus = 'OVERTIME';
-                    overtimeMinutes = diffMinutes;
-                }
-            }
-        } else if (attendance.shift) {
-            const [endH, endM] = attendance.shift.endTime.split(':').map(Number);
-            const shiftEndTimeUTC = new Date(today.getTime() + (endH - 7) * 3600000 + endM * 60000);
-            const diffMinutes = Math.floor((now.getTime() - shiftEndTimeUTC.getTime()) / 60000);
-
-            if (diffMinutes < -attendance.shift.earlyLeaveThreshold) {
-                checkOutStatus = 'EARLY_LEAVE';
-                earlyLeaveMinutes = Math.abs(diffMinutes);
-            } else if (diffMinutes >= 30) {
-                checkOutStatus = 'OVERTIME';
-                overtimeMinutes = diffMinutes;
-            }
+        if (configData && attendance.checkInTime) {
+            // Dùng Engine mới để tính checkout + OT + tổng giờ làm
+            const engineResult = this.calculator.evaluateAttendance(
+                configData,
+                attendance.checkInTime,
+                now,
+            );
+            checkOutStatus = engineResult.checkOutStatus;
+            earlyLeaveMinutes = engineResult.earlyLeaveMinutes;
+            overtimeMinutes = engineResult.overtimeMinutes;
+            totalWorkMinutes = engineResult.totalWorkMinutes;
+            dailyStatus = engineResult.dailyStatus;
+        } else if (attendance.policyDay && attendance.checkInTime) {
+            // ... (legacy logic) ...
+            totalWorkMinutes = Math.floor((now.getTime() - attendance.checkInTime.getTime()) / 60000);
+            dailyStatus = ((attendance.checkInStatus?.startsWith('LATE')) || checkOutStatus === 'EARLY_LEAVE') ? 'LATE_DAY' : 'FULL_DAY';
+        } else if (attendance.shift && attendance.checkInTime) {
+            // ... (legacy logic) ...
+            totalWorkMinutes = Math.floor((now.getTime() - attendance.checkInTime.getTime()) / 60000);
+            dailyStatus = ((attendance.checkInStatus?.startsWith('LATE')) || checkOutStatus === 'EARLY_LEAVE') ? 'LATE_DAY' : 'FULL_DAY';
         }
-
-        const totalWorkMinutes = Math.floor((now.getTime() - attendance.checkInTime.getTime()) / 60000);
 
         return this.prisma.attendance.update({
             where: { id: attendance.id },
@@ -354,6 +387,7 @@ export class AttendanceService {
                 totalWorkMinutes,
                 overtimeMinutes,
                 earlyLeaveMinutes,
+                dailyStatus,
                 note: attendance.note ? `${attendance.note} | ${dto.note}` : dto.note,
             }
         });
@@ -373,7 +407,13 @@ export class AttendanceService {
                 },
             },
             orderBy: { date: 'asc' },
-            include: { shift: true },
+            include: { 
+                shift: true,
+                exceptionRequests: {
+                    where: { status: 'PENDING' },
+                    select: { id: true, type: true, status: true }
+                }
+            },
         });
     }
 
@@ -517,10 +557,12 @@ export class AttendanceService {
         checkInTime?: string; // ISO string hoặc null
         checkOutTime?: string; // ISO string hoặc null
         note?: string;
+        changedById: string; // ID của người thực hiện chỉnh sửa
     }) {
         // 1. Xác định targetDate (00:00:00 UTC của ngày local VN)
         const dateVN = new Date(new Date(data.date).getTime() + 7 * 3600000);
         const targetDate = new Date(Date.UTC(dateVN.getUTCFullYear(), dateVN.getUTCMonth(), dateVN.getUTCDate()));
+        const vnDayOfWeek = dateVN.getUTCDay();
 
         const employee = await this.prisma.employee.findUnique({
             where: { id: data.employeeId },
@@ -529,17 +571,20 @@ export class AttendanceService {
 
         if (!employee) throw new NotFoundException('Không tìm thấy nhân viên');
 
+        // Fetch Policy
+        const policyInfo = await this.getPolicyForDayExplicit(data.employeeId, vnDayOfWeek);
+        const policy = policyInfo?.policy;
+        const policyDay = policyInfo?.day;
+        const configData = (policy as any)?.configData as AttendanceConfig | null;
+
         let attendance = await this.prisma.attendance.findUnique({
             where: { employeeId_date: { employeeId: data.employeeId, date: targetDate } },
             include: { shift: true }
         });
 
-        let shift = attendance?.shift;
-        if (!shift) {
-            shift = await this.prisma.workShift.findFirst({
-                where: { branchId: employee.branchId, isActive: true },
-            });
-        }
+        // Parse Inputs
+        const checkInDate = data.checkInTime ? new Date(data.checkInTime + ':00+07:00') : null;
+        const checkOutDate = data.checkOutTime ? new Date(data.checkOutTime + ':00+07:00') : null;
 
         let lateMinutes = 0;
         let earlyLeaveMinutes = 0;
@@ -547,87 +592,218 @@ export class AttendanceService {
         let checkInStatus = 'ON_TIME';
         let checkOutStatus = 'ON_TIME';
         let totalWorkMinutes = 0;
+        let dailyStatus = 'FULL_DAY';
 
-        // 2. Chuyển đổi giờ vào/ra từ Local VN sang UTC để tính toán
-        // Sử dụng concat '+07:00' để ép parse theo múi giờ VN, bất kể múi giờ server
-        const checkInDate = data.checkInTime ? new Date(data.checkInTime + ':00+07:00') : null;
-        const checkOutDate = data.checkOutTime ? new Date(data.checkOutTime + ':00+07:00') : null;
-
-        if (shift) {
-            const [startH, startM] = shift.startTime.split(':').map(Number);
-            const shiftStartTime = new Date(targetDate.getTime() + (startH - 7) * 3600000 + startM * 60000);
-
-            if (checkInDate) {
-                const diffIn = Math.floor((checkInDate.getTime() - shiftStartTime.getTime()) / 60000);
-                if (diffIn > shift.lateSeriousThreshold) {
-                    checkInStatus = 'LATE_SERIOUS';
-                    lateMinutes = diffIn;
-                } else if (diffIn > shift.lateThreshold) {
-                    checkInStatus = 'LATE';
-                    lateMinutes = diffIn;
-                }
-            }
-
-            if (checkOutDate) {
-                const [endH, endM] = shift.endTime.split(':').map(Number);
-                const shiftEndTime = new Date(targetDate.getTime() + (endH - 7) * 3600000 + endM * 60000);
-
-                const diffOut = Math.floor((checkOutDate.getTime() - shiftEndTime.getTime()) / 60000);
-                if (diffOut < -shift.earlyLeaveThreshold) {
-                    checkOutStatus = 'EARLY_LEAVE';
-                    earlyLeaveMinutes = Math.abs(diffOut);
-                } else if (diffOut >= 30) {
-                    checkOutStatus = 'OVERTIME';
-                    overtimeMinutes = diffOut;
-                }
-            }
-        }
-
-        if (checkInDate && checkOutDate) {
-            totalWorkMinutes = Math.floor((checkOutDate.getTime() - checkInDate.getTime()) / 60000);
-        }
-
-        const dailyStatus = (checkInStatus.startsWith('LATE') || checkOutStatus === 'EARLY_LEAVE') ? 'INCOMPLETE' : 'FULL_DAY';
-
-        if (!attendance) {
-            return this.prisma.attendance.create({
-                data: {
-                    employeeId: data.employeeId,
-                    branchId: employee.branchId,
-                    date: targetDate,
-                    shiftId: shift?.id,
-                    checkInTime: checkInDate,
-                    checkInStatus,
-                    checkInMethod: 'MANUAL',
-                    lateMinutes,
-                    checkOutTime: checkOutDate,
-                    checkOutStatus,
-                    checkOutMethod: 'MANUAL',
-                    earlyLeaveMinutes,
-                    overtimeMinutes,
-                    totalWorkMinutes,
-                    dailyStatus,
-                    note: `[Đã hiệu chỉnh] ${data.note || ''}`,
-                }
-            });
+        // 🚀 CALCULATION ENGINE
+        if (configData && checkInDate && checkOutDate) {
+            const engineResult = this.calculator.evaluateAttendance(configData, checkInDate, checkOutDate);
+            checkInStatus = engineResult.checkInStatus;
+            checkOutStatus = engineResult.checkOutStatus;
+            lateMinutes = engineResult.lateMinutes;
+            earlyLeaveMinutes = engineResult.earlyLeaveMinutes;
+            overtimeMinutes = engineResult.overtimeMinutes;
+            totalWorkMinutes = engineResult.totalWorkMinutes;
+            dailyStatus = engineResult.dailyStatus;
+        } else if (configData && checkInDate) {
+            const engineResult = this.calculator.evaluateCheckIn(configData, checkInDate);
+            checkInStatus = engineResult.checkInStatus;
+            lateMinutes = engineResult.lateMinutes;
+            dailyStatus = checkInStatus === 'ON_TIME' ? 'FULL_DAY' : 'LATE_DAY';
         } else {
-            return this.prisma.attendance.update({
-                where: { id: attendance.id },
+            // Legacy/Fallback logic (WorkShift)
+            let shift = attendance?.shift;
+            if (!shift) {
+                shift = await this.prisma.workShift.findFirst({
+                    where: { branchId: employee.branchId, isActive: true },
+                });
+            }
+
+            if (shift) {
+                const [startH, startM] = shift.startTime.split(':').map(Number);
+                const shiftStartTime = new Date(targetDate.getTime() + (startH - 7) * 3600000 + startM * 60000);
+
+                if (checkInDate) {
+                    const diffIn = Math.floor((checkInDate.getTime() - shiftStartTime.getTime()) / 60000);
+                    if (diffIn > shift.lateSeriousThreshold) {
+                        checkInStatus = 'LATE_SERIOUS';
+                        lateMinutes = diffIn;
+                    } else if (diffIn > shift.lateThreshold) {
+                        checkInStatus = 'LATE';
+                        lateMinutes = diffIn;
+                    }
+                }
+
+                if (checkOutDate) {
+                    const [endH, endM] = shift.endTime.split(':').map(Number);
+                    const shiftEndTime = new Date(targetDate.getTime() + (endH - 7) * 3600000 + endM * 60000);
+                    const diffOut = Math.floor((checkOutDate.getTime() - shiftEndTime.getTime()) / 60000);
+                    
+                    if (diffOut < -shift.earlyLeaveThreshold) {
+                        checkOutStatus = 'EARLY_LEAVE';
+                        earlyLeaveMinutes = Math.abs(diffOut);
+                    } else if (diffOut >= 30) {
+                        checkOutStatus = 'OVERTIME';
+                        overtimeMinutes = diffOut;
+                    }
+                }
+            }
+
+            if (checkInDate && checkOutDate) {
+                totalWorkMinutes = Math.floor((checkOutDate.getTime() - checkInDate.getTime()) / 60000);
+            }
+            dailyStatus = (checkInStatus.startsWith('LATE') || checkOutStatus === 'EARLY_LEAVE') ? 'INCOMPLETE' : 'FULL_DAY';
+        }
+
+        const auditData = {
+            old: attendance ? {
+                checkInTime: attendance.checkInTime,
+                checkInStatus: attendance.checkInStatus,
+                checkOutTime: attendance.checkOutTime,
+                checkOutStatus: attendance.checkOutStatus,
+                lateMinutes: attendance.lateMinutes,
+                earlyLeaveMinutes: attendance.earlyLeaveMinutes,
+                dailyStatus: attendance.dailyStatus,
+                note: attendance.note
+            } : null,
+            new: {
+                checkInTime: checkInDate,
+                checkInStatus,
+                checkOutTime: checkOutDate,
+                checkOutStatus,
+                lateMinutes,
+                earlyLeaveMinutes,
+                dailyStatus,
+                note: data.note
+            }
+        };
+
+        const result = await this.prisma.$transaction(async (tx) => {
+            let updatedAttendance;
+            const commonData = {
+                checkInTime: checkInDate,
+                checkInStatus,
+                checkInMethod: 'MANUAL',
+                lateMinutes,
+                checkOutTime: checkOutDate,
+                checkOutStatus,
+                checkOutMethod: 'MANUAL',
+                earlyLeaveMinutes,
+                overtimeMinutes,
+                totalWorkMinutes,
+                dailyStatus,
+                isManualOverride: true,
+                approvedById: data.changedById,
+                attendancePolicyDayId: policyDay?.id,
+            };
+
+            if (!attendance) {
+                updatedAttendance = await tx.attendance.create({
+                    data: {
+                        employeeId: data.employeeId,
+                        branchId: employee.branchId,
+                        date: targetDate,
+                        ...commonData,
+                        note: `[Đã hiệu chỉnh] ${data.note || ''}`,
+                    }
+                });
+            } else {
+                updatedAttendance = await tx.attendance.update({
+                    where: { id: attendance.id },
+                    data: {
+                        ...commonData,
+                        note: `${attendance.note || ''} | [Đã hiệu chỉnh] ${data.note || ''}`,
+                    }
+                });
+            }
+
+            // Ghi log chỉnh sửa
+            await (tx as any).attendanceAuditLog.create({
                 data: {
-                    checkInTime: checkInDate,
-                    checkInStatus,
-                    checkInMethod: 'MANUAL',
-                    lateMinutes,
-                    checkOutTime: checkOutDate,
-                    checkOutStatus,
-                    checkOutMethod: 'MANUAL',
-                    earlyLeaveMinutes,
-                    overtimeMinutes,
-                    totalWorkMinutes,
-                    dailyStatus,
-                    note: `${attendance.note || ''} | [Đã hiệu chỉnh] ${data.note || ''}`,
+                    attendanceId: updatedAttendance.id,
+                    changedBy: data.changedById,
+                    action: 'MANUAL_ADJUST',
+                    oldData: auditData.old as any,
+                    newData: auditData.new as any,
+                    reason: data.note || 'Hiệu chỉnh chấm công thủ công',
                 }
             });
+
+            return updatedAttendance;
+        });
+
+        return result;
+    }
+
+    async getAuditLogs(attendanceId: string) {
+        return (this.prisma as any).attendanceAuditLog.findMany({
+            where: { attendanceId },
+            include: {
+                user: {
+                    select: {
+                        username: true,
+                        employee: { select: { fullName: true } }
+                    }
+                }
+            },
+            orderBy: { createdAt: 'desc' }
+        });
+    }
+
+    async getAllAuditLogs(month?: number, year?: number, branchId?: string, search?: string) {
+        let dateFilter = {};
+        if (month && year) {
+            const startDate = new Date(Date.UTC(year, month - 1, 1));
+            const endDate = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999));
+            dateFilter = {
+                createdAt: {
+                    gte: startDate,
+                    lte: endDate,
+                }
+            };
         }
+
+        let employeeFilter = {};
+        if (branchId || search) {
+            employeeFilter = {
+                attendance: {
+                    employee: {
+                        ...(branchId ? { branchId } : {}),
+                        ...(search ? {
+                            OR: [
+                                { fullName: { contains: search, mode: 'insensitive' } },
+                                { phone: { contains: search, mode: 'insensitive' } }
+                            ]
+                        } : {})
+                    }
+                }
+            };
+        }
+
+        return (this.prisma as any).attendanceAuditLog.findMany({
+            where: {
+                ...dateFilter,
+                ...employeeFilter
+            },
+            include: {
+                user: {
+                    select: {
+                        username: true,
+                        employee: { select: { fullName: true } }
+                    }
+                },
+                attendance: {
+                    include: {
+                        employee: {
+                            select: {
+                                id: true,
+                                fullName: true,
+                                branch: { select: { name: true } }
+                            }
+                        }
+                    }
+                }
+            },
+            orderBy: { createdAt: 'desc' }
+        });
     }
 }

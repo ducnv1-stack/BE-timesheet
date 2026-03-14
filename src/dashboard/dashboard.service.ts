@@ -33,6 +33,8 @@ export class DashboardService {
             case 'DRIVER':
             case 'COMPANY_DRIVER':
             case 'DELIVERY_STAFF':
+            case 'TECHNICIAN':
+            case 'WAREHOUSE':
                 return this.getDriverStats(user.employee?.id, startDate, endDate);
             default:
                 return { message: 'Role not supported for dashboard yet' };
@@ -69,10 +71,10 @@ export class DashboardService {
     private async getAccountingStats(branchId?: string, startStr?: string, endStr?: string) {
         const { startDate, endDate, orderStartDate, orderEndDate } = this.getVNDateBounds(startStr, endStr);
 
-        // Base filter for orders (ONLY confirmed orders count towards revenue)
+        // Base filter for orders (Lọc theo orderDate để đồng bộ bộ lọc tháng)
         const orderWhere: any = {
             isPaymentConfirmed: true,
-            confirmedAt: { gte: startDate, lte: endDate }
+            orderDate: { gte: orderStartDate, lte: orderEndDate }
         };
         if (branchId) orderWhere.branchId = branchId;
 
@@ -127,6 +129,11 @@ export class DashboardService {
                     ...(branchId ? { branchId } : {}),
                     status: { notIn: ['canceled', 'rejected'] },
                     isInvoiceIssued: false,
+                    payments: {
+                        some: {
+                            paymentMethod: { in: ['TRANSFER_COMPANY', 'CARD', 'INSTALLMENT', 'CREDIT'] }
+                        }
+                    },
                     createdAt: { lte: endDate }
                 }
             }),
@@ -176,12 +183,15 @@ export class DashboardService {
         const pendingInstallmentRevenue = Number(pendingInstallmentRevResult._sum.totalAmount || 0);
 
         // Calculate Debt Stats
-        const debtOrderCount = debtOrdersData.length;
-        const debtTotalAmount = debtOrdersData.reduce((sum, o) => sum + Number(o.totalAmount), 0);
-        const debtPaidAmount = debtOrdersData.reduce((sum, o) => {
+        const processedDebtOrders = debtOrdersData.map(o => {
             const paid = o.payments.reduce((pSum, p) => pSum + Number(p.amount), 0);
-            return sum + paid;
-        }, 0);
+            const remaining = Number(o.totalAmount) - paid;
+            return { ...o, paid, remaining };
+        }).filter(o => o.remaining > 0.01);
+
+        const debtOrderCount = processedDebtOrders.length;
+        const debtTotalAmount = processedDebtOrders.reduce((sum, o) => sum + Number(o.totalAmount), 0);
+        const debtPaidAmount = processedDebtOrders.reduce((sum, o) => sum + o.paid, 0);
         const debtRemainingAmount = debtTotalAmount - debtPaidAmount;
 
         const debtStats = {
@@ -215,26 +225,23 @@ export class DashboardService {
             };
         }));
 
-        // Filter for branch breakdown (Confirmed in period OR Pending at mốc endDate)
+        // Filter for branch breakdown (Orders in period for salesRevenue / revenue calculation)
         const branchWhere: any = {
             status: { notIn: ['canceled', 'rejected'] },
             OR: [
                 {
-                    isPaymentConfirmed: true,
-                    confirmedAt: { gte: startDate, lte: endDate }
+                    // Orders created in period
+                    orderDate: { gte: orderStartDate, lte: orderEndDate }
                 },
                 {
+                    // Pending orders from anytime (for debt count / stats)
                     isPaymentConfirmed: false,
                     createdAt: { lte: endDate }
                 },
                 {
-                    // Catch orders confirmed outside range but still pending invoice
+                    // Orders waiting for invoice
                     isInvoiceIssued: false,
                     createdAt: { lte: endDate }
-                },
-                {
-                    // All orders in period for salesRevenue calculation
-                    orderDate: { gte: orderStartDate, lte: orderEndDate }
                 }
             ]
         };
@@ -278,7 +285,7 @@ export class DashboardService {
                     order: {
                         status: { notIn: ['canceled', 'rejected'] },
                         isPaymentConfirmed: true,
-                        confirmedAt: { gte: startDate, lte: endDate }
+                        orderDate: { gte: orderStartDate, lte: orderEndDate }
                     }
                 }
             })
@@ -299,13 +306,13 @@ export class DashboardService {
             );
             const salesOrderCount = allOrdersControlledByBranch.length;
 
-            // Đơn hoàn thành: Chỉ tính đơn thuộc chi nhánh chủ quản
+            // Đơn hoàn thành: Chỉ tính đơn thuộc chi nhánh chủ quản (Lọc theo orderDate để khớp với logic mới)
             const revenueOrdersControlledByBranch = b.orders.filter(o =>
-                o.branchId === b.id && o.isPaymentConfirmed && o.confirmedAt && o.confirmedAt >= startDate && o.confirmedAt <= endDate
+                o.branchId === b.id && o.isPaymentConfirmed && o.orderDate >= orderStartDate && o.orderDate <= orderEndDate
             );
             const completedOrderCount = revenueOrdersControlledByBranch.length;
 
-            const lowPriceOrders = revenueOrdersControlledByBranch.filter(o => o.items.some(i => i.isBelowMin)).length;
+            const lowPriceOrders = allOrdersControlledByBranch.filter(o => o.items.some(i => i.isBelowMin)).length;
 
             // Non-installment unconfirmed (All time up to endDate)
             const unconfirmedOrders = b.orders.filter(o =>
@@ -340,9 +347,13 @@ export class DashboardService {
         // Sort by revenue for Top chart
         const topBranches = [...branchStats].sort((a, b) => b.revenue - a.revenue);
 
-        // ===== Advanced Stats: Best Sellers & Revenue Trend (ALL SYSTEM) =====
+        // ===== Advanced Stats: Best Sellers (Lấy theo orderDate) =====
         const reportOrders = await this.prisma.order.findMany({
-            where: orderWhere,
+            where: {
+                ...(branchId ? { branchId } : {}),
+                status: { notIn: ['canceled', 'rejected'] },
+                orderDate: { gte: orderStartDate, lte: orderEndDate }
+            },
             include: {
                 items: { include: { product: { select: { name: true } } } }
             }
@@ -362,43 +373,33 @@ export class DashboardService {
             });
         });
 
-        // Revenue Trend (ALL SYSTEM) - Show both Sales (createdAt) and Completed (confirmedAt)
+        // Revenue Trend (ALL SYSTEM) - Show both Sales and Completed based on orderDate
         const allSystemOrders = await this.prisma.order.findMany({
             where: {
                 status: { notIn: ['canceled', 'rejected'] },
                 ...(branchId ? { branchId } : {}),
-                OR: [
-                    { orderDate: { gte: orderStartDate, lte: orderEndDate } },
-                    {
-                        isPaymentConfirmed: true,
-                        confirmedAt: { gte: startDate, lte: endDate }
-                    }
-                ]
+                orderDate: { gte: orderStartDate, lte: orderEndDate }
             },
             select: {
                 totalAmount: true,
                 orderDate: true,
-                isPaymentConfirmed: true,
-                confirmedAt: true
+                isPaymentConfirmed: true
             }
         });
 
         allSystemOrders.forEach(o => {
-            // 1. Sales Trend (by orderDate)
-            if (o.orderDate >= orderStartDate && o.orderDate <= orderEndDate) {
-                const sDate = new Date(o.orderDate.getTime() + 7 * 60 * 60 * 1000).toISOString().split('T')[0];
-                const sEntry = trendMap.get(sDate) || { date: sDate, salesRevenue: 0, revenue: 0 };
-                sEntry.salesRevenue += Number(o.totalAmount);
-                trendMap.set(sDate, sEntry);
+            const sDate = new Date(o.orderDate.getTime() + 7 * 60 * 60 * 1000).toISOString().split('T')[0];
+            const sEntry = trendMap.get(sDate) || { date: sDate, salesRevenue: 0, revenue: 0 };
+            
+            // 1. Sales Trend
+            sEntry.salesRevenue += Number(o.totalAmount);
+            
+            // 2. Completed Trend (Calculated on the same orderDate if confirmed)
+            if (o.isPaymentConfirmed) {
+                sEntry.revenue += Number(o.totalAmount);
             }
-
-            // 2. Completed Trend (by confirmedAt)
-            if (o.isPaymentConfirmed && o.confirmedAt && o.confirmedAt >= startDate && o.confirmedAt <= endDate) {
-                const cDate = new Date(o.confirmedAt.getTime() + 7 * 60 * 60 * 1000).toISOString().split('T')[0];
-                const cEntry = trendMap.get(cDate) || { date: cDate, salesRevenue: 0, revenue: 0 };
-                cEntry.revenue += Number(o.totalAmount);
-                trendMap.set(cDate, cEntry);
-            }
+            
+            trendMap.set(sDate, sEntry);
         });
 
         const bestSellers = Array.from(productMap.values()).sort((a, b) => b.quantity - a.quantity).slice(0, 5);
@@ -503,6 +504,11 @@ export class DashboardService {
                 }
             },
             include: {
+                order: {
+                    include: {
+                        items: { include: { product: true } }
+                    }
+                },
                 employee: { include: { branch: true } }
             }
         });
@@ -517,7 +523,7 @@ export class DashboardService {
             }
         });
 
-        // ========= 1b. DOANH SỐ HOÀN THÀNH chi nhánh — Đơn đã xác nhận (confirmedAt) =========
+        // ========= 1b. DOANH SỐ HOÀN THÀNH chi nhánh — Đơn đã xác nhận (Lọc theo orderDate) =========
         // Lấy doanh thu từ tiền được chia (Split)
         const branchOrders = await this.prisma.orderSplit.findMany({
             where: {
@@ -525,7 +531,7 @@ export class DashboardService {
                 order: {
                     isPaymentConfirmed: true,
                     status: { notIn: ['canceled', 'rejected'] },
-                    confirmedAt: { gte: startDate, lte: endDate }
+                    orderDate: { gte: orderStartDate, lte: orderEndDate }
                 }
             },
             include: {
@@ -544,23 +550,32 @@ export class DashboardService {
         const branchRevenue = branchOrders.reduce((sum, split) => sum + Number(split.splitAmount), 0);
         const branchPendingRevenue = Math.max(0, branchSalesRevenue - branchRevenue);
 
-        // ========= 2. Tính chỉ số giá dưới Min (branch-level) =========
+        // ========= 2. Tính chỉ số giá dưới Min (branch-level) - Bao gồm cả đơn chưa xác nhận để cảnh báo sớm =========
         let lowPriceOrderCount = 0;
-        let lowPriceRevenue = 0;
+        let lowPriceRevenue = 0; // Tính trên doanh số bán (Sales)
+        let lowPriceRatioConfirmed = 0; // Tỷ lệ thực tế (Confirmed)
+        let lowPriceRevenueConfirmed = 0;
 
-        for (const split of branchOrders) {
+        for (const split of branchSalesSplits) {
             const order = split.order;
             const shareRatio = Number(split.splitAmount) / Number(order.totalAmount || 1);
+            let hasMin = false;
 
             for (const item of order.items) {
                 if (item.isBelowMin) {
-                    lowPriceOrderCount++;
-                    lowPriceRevenue += Number(item.totalPrice) * shareRatio;
+                    hasMin = true;
+                    const itemValue = Number(item.totalPrice) * shareRatio;
+                    lowPriceRevenue += itemValue;
+                    if (order.isPaymentConfirmed) {
+                        lowPriceRevenueConfirmed += itemValue;
+                    }
                 }
             }
+            if (hasMin) lowPriceOrderCount++;
         }
 
-        const lowPriceRatio = branchRevenue > 0 ? (lowPriceRevenue / branchRevenue) * 100 : 0;
+        const lowPriceRatio = branchSalesRevenue > 0 ? (lowPriceRevenue / branchSalesRevenue) * 100 : 0;
+        lowPriceRatioConfirmed = branchRevenue > 0 ? (lowPriceRevenueConfirmed / branchRevenue) * 100 : 0;
 
         // ========= 3. Tìm mốc lương đạt được =========
         const salaryRules = await this.prisma.branchManagerSalaryRule.findMany({
@@ -579,7 +594,7 @@ export class DashboardService {
         const orderWhere: any = {
             branchId,
             isPaymentConfirmed: true,
-            confirmedAt: { gte: startDate, lte: endDate }
+            orderDate: { gte: orderStartDate, lte: orderEndDate }
         };
 
         const [totalOrders, unconfirmedCount, pendingInstallmentCount, unissuedInvoiceCount, activeEmployees, eligibleOrders, debtOrdersData] = await Promise.all([
@@ -614,12 +629,17 @@ export class DashboardService {
                 }
             }),
 
-            // Chờ xuất hóa đơn (Tất cả đơn chưa xuất hóa đơn - theo yêu cầu: không phân biệt gấp/không gấp)
+            // Chờ xuất hóa đơn (Chỉ các đơn theo PTTT quy định - đến mốc endDate)
             this.prisma.order.count({
                 where: {
                     branchId,
                     status: { notIn: ['canceled', 'rejected'] },
                     isInvoiceIssued: false,
+                    payments: {
+                        some: {
+                            paymentMethod: { in: ['TRANSFER_COMPANY', 'CARD', 'INSTALLMENT', 'CREDIT'] }
+                        }
+                    },
                     createdAt: { lte: endDate }
                 }
             }),
@@ -677,12 +697,23 @@ export class DashboardService {
             isAchieved: branchRevenue >= Number(rule.targetRevenue)
         }));
 
-        // ===== Advanced Stats: Best Sellers & Revenue Trend (BRANCH SPECIFIC) =====
+        // ===== Advanced Stats: Best Sellers (Lấy theo orderDate & Branch) =====
         const mgrProductMap = new Map();
         const mgrTrendMap = new Map();
 
-        branchOrders.forEach(split => {
-            const o = split.order;
+        // Lấy riêng danh sách đơn cho Best Sellers theo orderDate
+        const bestSellerOrders = await this.prisma.order.findMany({
+            where: {
+                branchId,
+                status: { notIn: ['canceled', 'rejected'] },
+                orderDate: { gte: orderStartDate, lte: orderEndDate }
+            },
+            include: {
+                items: { include: { product: { select: { name: true } } } }
+            }
+        });
+
+        bestSellerOrders.forEach(o => {
             // Products
             o.items.forEach(item => {
                 const pName = item.product.name;
@@ -693,34 +724,8 @@ export class DashboardService {
             });
         });
 
-        // Revenue Trend (Branch Specific)
-        const branchTrendOrders = await this.prisma.orderSplit.findMany({
-            where: {
-                employee: { branchId },
-                order: {
-                    status: { notIn: ['canceled', 'rejected'] },
-                    OR: [
-                        { orderDate: { gte: orderStartDate, lte: orderEndDate } },
-                        {
-                            isPaymentConfirmed: true,
-                            confirmedAt: { gte: startDate, lte: endDate }
-                        }
-                    ]
-                }
-            },
-            include: {
-                order: {
-                    select: {
-                        totalAmount: true,
-                        orderDate: true,
-                        isPaymentConfirmed: true,
-                        confirmedAt: true
-                    }
-                }
-            }
-        });
-
-        branchTrendOrders.forEach(split => {
+        // Vẽ Trend dùng branchOrders (Hoàn thành) + branchSalesSplits (Bán) theo orderDate
+        branchSalesSplits.forEach(split => {
             const o = split.order;
             // 1. Sales Trend
             if (o.orderDate >= orderStartDate && o.orderDate <= orderEndDate) {
@@ -729,14 +734,15 @@ export class DashboardService {
                 sEntry.salesRevenue += Number(split.splitAmount);
                 mgrTrendMap.set(sDate, sEntry);
             }
+        });
 
-            // 2. Completed Trend
-            if (o.isPaymentConfirmed && o.confirmedAt && o.confirmedAt >= startDate && o.confirmedAt <= endDate) {
-                const cDate = new Date(o.confirmedAt.getTime() + 7 * 60 * 60 * 1000).toISOString().split('T')[0];
-                const cEntry = mgrTrendMap.get(cDate) || { date: cDate, salesRevenue: 0, revenue: 0 };
-                cEntry.revenue += Number(split.splitAmount);
-                mgrTrendMap.set(cDate, cEntry);
-            }
+        branchOrders.forEach(split => {
+            const o = split.order;
+            // 2. Completed Trend (Based on orderDate to be consistent)
+            const cDate = new Date(o.orderDate.getTime() + 7 * 60 * 60 * 1000).toISOString().split('T')[0];
+            const cEntry = mgrTrendMap.get(cDate) || { date: cDate, salesRevenue: 0, revenue: 0 };
+            cEntry.revenue += Number(split.splitAmount);
+            mgrTrendMap.set(cDate, cEntry);
         });
 
         const bestSellers = Array.from(mgrProductMap.values()).sort((a, b) => b.quantity - a.quantity).slice(0, 5);
@@ -763,12 +769,15 @@ export class DashboardService {
             .slice(0, 5);
 
         // Calculate Debt Stats
-        const debtOrderCount = debtOrdersData.length;
-        const debtTotalAmount = debtOrdersData.reduce((sum, o) => sum + Number(o.totalAmount), 0);
-        const debtPaidAmount = debtOrdersData.reduce((sum, o) => {
+        const processedDebtOrders = debtOrdersData.map(o => {
             const paid = o.payments.reduce((pSum, p) => pSum + Number(p.amount), 0);
-            return sum + paid;
-        }, 0);
+            const remaining = Number(o.totalAmount) - paid;
+            return { ...o, paid, remaining };
+        }).filter(o => o.remaining > 0.01);
+
+        const debtOrderCount = processedDebtOrders.length;
+        const debtTotalAmount = processedDebtOrders.reduce((sum, o) => sum + Number(o.totalAmount), 0);
+        const debtPaidAmount = processedDebtOrders.reduce((sum, o) => sum + o.paid, 0);
         const debtRemainingAmount = debtTotalAmount - debtPaidAmount;
 
         const debtStats = {
@@ -829,17 +838,30 @@ export class DashboardService {
         const commissionRate = Number(achievedRule.commissionPercent);
 
         // ========= 6. Tính hoa hồng, thưởng nóng, tiền ship =========
-        const commission = (branchRevenue * commissionRate) / 100;
-
         let managerHotBonus = 0;
+        let totalCommission = 0;
+
         for (const split of branchOrders) {
-            for (const item of split.order.items) {
+            const order = split.order;
+            const orderTotal = Number(order.totalAmount);
+            const splitAmount = Number(split.splitAmount);
+            const netRevenue = orderTotal - Number(order.giftAmount || 0);
+            const commissionFactor = orderTotal > 0 ? (netRevenue / orderTotal) : 0;
+            const shareRatio = orderTotal > 0 ? (splitAmount / orderTotal) : 0;
+
+            // 1. Calculate weighted commission for branch manager based on commissionRate
+            // Formula: (SplitAmount - ProportionalGiftAmount) * commissionRate
+            totalCommission += (splitAmount * commissionFactor * commissionRate) / 100;
+
+            // 2. Calculate Hot Bonuses
+            for (const item of order.items) {
                 if (item.product.isHighEnd && item.managerBonusAmount) {
-                    const splitRatio = Number(split.splitAmount) / Number(split.order.totalAmount);
-                    managerHotBonus += Number(item.managerBonusAmount) * item.quantity * splitRatio;
+                    managerHotBonus += Number(item.managerBonusAmount) * item.quantity * shareRatio;
                 }
             }
         }
+
+        const commission = totalCommission;
 
         const shippingFees = branchOrders.reduce((sum, split) => {
             const splitRatio = Number(split.splitAmount) / Number(split.order.totalAmount);
@@ -848,8 +870,8 @@ export class DashboardService {
             return sum + (deliveryFees * splitRatio);
         }, 0);
 
-        // ========= 7. Áp dụng logic phạt/khoan hồng =========
-        const isPenalty = lowPriceRatio >= 20;
+        // ========= 7. Áp dụng logic phạt/khoan hồng (Dựa trên đơn hoàn thành) =========
+        const isPenalty = lowPriceRatioConfirmed >= 20;
         const isClemency = branchRevenue >= Number(achievedRule.targetRevenue) * 1.1;
 
         let actualBonus = baseBonus;
@@ -924,31 +946,21 @@ export class DashboardService {
                 }
             },
             include: {
-                order: { select: { orderDate: true } }
+                order: {
+                    select: {
+                        id: true,
+                        orderDate: true,
+                        totalAmount: true,
+                        isPaymentConfirmed: true,
+                        giftAmount: true,
+                        items: true
+                    }
+                }
             }
         });
         const salesRevenue = salesSplits.reduce((sum, s) => sum + Number(s.splitAmount), 0);
         const salesOrderCount = new Set(salesSplits.map(s => s.orderId)).size;
 
-        // 2b. DOANH SỐ HOÀN THÀNH — Đơn đã xác nhận thanh toán (confirmedAt)
-        const splits = await this.prisma.orderSplit.findMany({
-            where: {
-                employeeId,
-                order: {
-                    isPaymentConfirmed: true,
-                    confirmedAt: { gte: startDate, lte: endDate }
-                }
-            },
-            include: {
-                order: {
-                    include: {
-                        items: {
-                            include: { product: true }
-                        }
-                    }
-                }
-            }
-        });
 
         // 2c. KHÁCH CÒN NỢ (Của nhân viên này) — Tất cả đơn chưa xác nhận thanh toán (lũy kế đến endDate)
         const debtSplitsRaw = await this.prisma.orderSplit.findMany({
@@ -970,20 +982,26 @@ export class DashboardService {
             }
         });
 
-        const debtOrderCount = new Set(debtSplitsRaw.map(s => s.orderId)).size;
+        const processedSplits = debtSplitsRaw.map(split => {
+            const splitAmount = Number(split.splitAmount);
+            const orderTotal = Number(split.order.totalAmount);
+            const paidTotal = split.order.payments.reduce((sum, p) => sum + Number(p.amount), 0);
+            const orderRemaining = orderTotal - paidTotal;
+            const shareRatio = orderTotal > 0 ? (splitAmount / orderTotal) : 0;
+            return {
+                ...split,
+                orderRemaining,
+                splitPaid: paidTotal * shareRatio
+            };
+        }).filter(s => s.orderRemaining > 0.01);
+
+        const debtOrderCount = new Set(processedSplits.map(s => s.orderId)).size;
         let debtTotalAmount = 0;
         let debtPaidAmount = 0;
 
-        for (const split of debtSplitsRaw) {
-            const splitAmount = Number(split.splitAmount);
-            const orderTotal = Number(split.order.totalAmount);
-            if (orderTotal > 0) {
-                const shareRatio = splitAmount / orderTotal;
-                const paidTotal = split.order.payments.reduce((sum, p) => sum + Number(p.amount), 0);
-
-                debtTotalAmount += splitAmount;
-                debtPaidAmount += paidTotal * shareRatio;
-            }
+        for (const split of processedSplits) {
+            debtTotalAmount += Number(split.splitAmount);
+            debtPaidAmount += split.splitPaid;
         }
         const debtRemainingAmount = debtTotalAmount - debtPaidAmount;
 
@@ -995,20 +1013,27 @@ export class DashboardService {
         };
 
         let completedRevenue = 0;
-        let lowPriceRevenue = 0;
+        let lowPriceRevenueAll = 0;
         let lowPriceOrderCount = 0;
+        let lowPriceRevenueConfirmed = 0;
         let totalCommission = 0;
         let totalHotBonus = 0;
 
-        for (const split of splits) {
+        for (const split of salesSplits) {
             const splitAmount = Number(split.splitAmount);
-            completedRevenue += splitAmount;
-
             const order = split.order;
             const orderTotal = Number(order.totalAmount);
 
+            // Chỉ tính doanh thu hoàn thành và hoa hồng cho đơn đã confirm
+            if (order.isPaymentConfirmed) {
+                completedRevenue += splitAmount;
+            }
+
             if (orderTotal > 0) {
                 const shareRatio = splitAmount / orderTotal;
+                const netRevenue = orderTotal - Number(order.giftAmount || 0);
+                const commissionFactor = orderTotal > 0 ? (netRevenue / orderTotal) : 0;
+
                 let orderLowPriceValue = 0;
                 let hasLowPriceItem = false;
 
@@ -1016,24 +1041,35 @@ export class DashboardService {
                     const price = Number(item.unitPrice);
                     const minPrice = Number(item.minPriceAtSale);
                     const itemTotal = Number(item.totalPrice);
+                    
+                    if (order.isPaymentConfirmed) {
+                        // Commission = itemTotal * rate (1.8% or 1%) * commissionFactor (to subtract gift)
+                        const rate = item.isBelowMin ? 0.01 : 0.018;
+                        totalCommission += itemTotal * rate * shareRatio * commissionFactor;
 
-                    // Commission = itemTotal * rate (1.8% or 1%)
-                    const rate = item.isBelowMin ? 0.01 : 0.018;
-                    totalCommission += itemTotal * rate * shareRatio;
-
-                    // Hot Bonus (Thưởng nóng) = saleBonusAmount (snapshot in OrderItem)
-                    totalHotBonus += Number(item.saleBonusAmount) * item.quantity * shareRatio;
+                        // Hot Bonus (Thưởng nóng) = saleBonusAmount (snapshot in OrderItem)
+                        totalHotBonus += Number(item.saleBonusAmount) * item.quantity * shareRatio;
+                    }
 
                     if (price < minPrice) {
-                        orderLowPriceValue += price * item.quantity;
+                        const itemValue = price * item.quantity;
+                        orderLowPriceValue += itemValue;
                         hasLowPriceItem = true;
+                        
+                        if (order.isPaymentConfirmed) {
+                            lowPriceRevenueConfirmed += itemValue * shareRatio;
+                        }
                     }
                 }
 
-                lowPriceRevenue += orderLowPriceValue * shareRatio;
+                lowPriceRevenueAll += orderLowPriceValue * shareRatio;
                 if (hasLowPriceItem) lowPriceOrderCount++;
             }
         }
+
+        const lowPriceRevenue = lowPriceRevenueAll; // Keep variable name for compatibility
+        const lowPriceRatioAll = salesRevenue > 0 ? (lowPriceRevenueAll / salesRevenue) : 0;
+        const lowPriceRatioConfirmed = completedRevenue > 0 ? (lowPriceRevenueConfirmed / completedRevenue) : 0;
 
         // 3. Fetch Shipping Fees (from deliveries where sale is the driver)
         const deliveries = await this.prisma.delivery.findMany({
@@ -1041,7 +1077,7 @@ export class DashboardService {
                 driverId: employeeId,
                 order: {
                     isPaymentConfirmed: true,
-                    confirmedAt: { gte: startDate, lte: endDate }
+                    orderDate: { gte: orderStartDate, lte: orderEndDate }
                 }
             }
         });
@@ -1051,8 +1087,8 @@ export class DashboardService {
         const achievedRule = salaryRules.find(rule => completedRevenue >= Number(rule.targetRevenue));
         const milestoneBonus = achievedRule ? Number(achievedRule.bonusAmount) : 0;
 
-        const lowPriceRatio = completedRevenue > 0 ? (lowPriceRevenue / completedRevenue) : 0;
-        const isPenalty = lowPriceRatio >= 0.2;
+        const lowPriceRatio = lowPriceRatioAll; // For display on card
+        const isPenalty = lowPriceRatioConfirmed >= 0.2;
         let isClemency = false;
         let actualReward = milestoneBonus;
 
@@ -1084,9 +1120,10 @@ export class DashboardService {
         ];
 
         const periodStats = periods.map(p => {
-            const periodRevenue = splits.filter(s => {
-                const confirmedAt = s.order.confirmedAt;
-                return confirmedAt && confirmedAt >= p.start && confirmedAt <= p.end;
+            const periodRevenue = salesSplits.filter(s => {
+                const o = s.order;
+                const orderDate = o.orderDate;
+                return o.isPaymentConfirmed && orderDate && orderDate >= p.start && orderDate <= p.end;
             }).reduce((sum, s) => sum + Number(s.splitAmount), 0);
 
             const periodSalesRevenue = salesSplits.filter(s => {
@@ -1136,7 +1173,7 @@ export class DashboardService {
             debtStats,                           // Chi tiết nợ
             monthlyRevenue: completedRevenue, // Backward compatible
             salesOrderCount,        // Tổng số đơn bán
-            orderCount: splits.length, // Số đơn hoàn thành
+            orderCount: salesSplits.filter(s => s.order.isPaymentConfirmed).length, // Số đơn hoàn thành
             totalCommission,
             hotBonus: totalHotBonus,
             shippingFees,
@@ -1169,7 +1206,7 @@ export class DashboardService {
 
         const orderWhere: any = {
             isPaymentConfirmed: true,
-            confirmedAt: { gte: startDate, lte: endDate },
+            orderDate: { gte: orderStartDate, lte: orderEndDate },
             status: { notIn: ['canceled', 'rejected'] }
         };
 
@@ -1183,8 +1220,12 @@ export class DashboardService {
         });
 
         // 2. Calculate Basic Stats
-        const systemRevenue = orders.reduce((sum, o) => sum + Number(o.totalAmount), 0);
-        // Doanh số bán toàn hệ thống
+        const systemRevenue = orders.reduce((sum, o) => {
+            const netOrderRevenue = Number(o.totalAmount) - Number(o.giftAmount || 0);
+            return sum + netOrderRevenue;
+        }, 0);
+
+        // Doanh số bán toàn hệ thống (Dùng để hiển thị, vẫn là Gross)
         const systemSalesResult = await this.prisma.order.aggregate({
             where: {
                 status: { notIn: ['canceled', 'rejected'] },
@@ -1208,16 +1249,27 @@ export class DashboardService {
         const branchMap = new Map();
         orders.forEach(o => {
             const bName = o.branch.name;
+            const netOrderRevenue = Number(o.totalAmount) - Number(o.giftAmount || 0);
             const current = branchMap.get(bName) || { name: bName, revenue: 0, orderCount: 0 };
-            current.revenue += Number(o.totalAmount);
+            current.revenue += netOrderRevenue;
             current.orderCount += 1;
             branchMap.set(bName, current);
         });
         const branchStats = Array.from(branchMap.values()).sort((a, b) => b.revenue - a.revenue);
 
-        // 4. Best Sellers
+        // 4. Best Sellers (Lấy theo orderDate toàn bộ hệ thống)
         const productMap = new Map();
-        orders.forEach(o => {
+        const systemProductOrders = await this.prisma.order.findMany({
+            where: {
+                status: { notIn: ['canceled', 'rejected'] },
+                orderDate: { gte: orderStartDate, lte: orderEndDate }
+            },
+            include: {
+                items: { include: { product: { select: { name: true } } } }
+            }
+        });
+
+        systemProductOrders.forEach(o => {
             o.items.forEach(item => {
                 const pName = item.product.name;
                 const current = productMap.get(pName) || { name: pName, quantity: 0, revenue: 0 };
@@ -1233,7 +1285,7 @@ export class DashboardService {
         // 5. Revenue Trend (Daily, adjusted to GMT+7)
         const trendMap = new Map();
         orders.forEach(o => {
-            const date = new Date(o.confirmedAt!.getTime() + 7 * 60 * 60 * 1000).toISOString().split('T')[0];
+            const date = new Date(o.orderDate.getTime() + 7 * 60 * 60 * 1000).toISOString().split('T')[0];
             const current = trendMap.get(date) || { date, revenue: 0, salesRevenue: 0 };
             current.revenue += Number(o.totalAmount);
             trendMap.set(date, current);
@@ -1308,16 +1360,19 @@ export class DashboardService {
                 orders: {
                     where: {
                         isPaymentConfirmed: true,
-                        confirmedAt: { gte: startDate, lte: endDate }
-                    },
-                    select: { totalAmount: true }
+                         orderDate: { gte: orderStartDate, lte: orderEndDate }
+                     },
+                     select: { totalAmount: true, giftAmount: true }
                 }
             }
         });
 
         let totalReward = 0;
         const branchStats = branches.map(b => {
-            const revenue = b.orders.reduce((sum, o) => sum + Number(o.totalAmount), 0);
+            const revenue = b.orders.reduce((sum, o) => {
+                const netOrderRevenue = Number(o.totalAmount) - Number(o.giftAmount || 0);
+                return sum + netOrderRevenue;
+            }, 0);
 
             // Find applicable rule (highest threshold achieved?)
             // Usually there is just one rule per employee for Marketing, applying to each branch.
@@ -1350,14 +1405,17 @@ export class DashboardService {
 
         // Logic lọc đơn hàng đồng bộ hoàn toàn với getAccountingStats -> branchWhere & revenueOrders filter
         const orderWhere: any = {
-            branchId,
             status: { notIn: ['canceled', 'rejected'] },
             items: {
                 some: { isBelowMin: true }
             },
-            isPaymentConfirmed: true,
-            confirmedAt: { gte: startDate, lte: endDate }
+            orderDate: { gte: orderStartDate, lte: orderEndDate }
         };
+
+        // Nếu là Manager thì chỉ xem được chi nhánh của mình
+        if (branchId) {
+            orderWhere.branchId = branchId;
+        }
 
         const orders = await this.prisma.order.findMany({
             where: orderWhere,
@@ -1373,31 +1431,37 @@ export class DashboardService {
                 },
                 payments: true, // Needed if we want to double check or display
                 splits: {
-                    include: { employee: true },
-                    take: 1
+                    where: branchId ? { branchId } : {}, 
+                    include: { employee: true }
                 }
             },
             orderBy: { createdAt: 'desc' },
             take: 50
         });
 
-        // Cẩn thận: getAccountingStats dùng filter thủ công trên mảng. 
-        // Logic Prisma OR ở trên đã cover khá sát.
-        // Ta map lại kết quả.
+        return orders.map(o => {
+            const branchTotalPercent = o.splits.reduce((sum, s) => sum + Number(s.splitPercent), 0);
+            const shareRatio = branchTotalPercent / 100;
 
-        return orders.map(o => ({
-            id: o.id,
-            customerName: o.customerName,
-            totalAmount: Number(o.totalAmount),
-            createdAt: o.createdAt,
-            employeeName: o.splits[0]?.employee?.fullName || o.staffCode || 'N/A',
-            violatedItems: o.items.map(i => ({
-                productName: i.product.name,
-                unitPrice: Number(i.unitPrice),
-                minPrice: Number(i.minPriceAtSale),
-                quantity: i.quantity
-            }))
-        }));
+            return {
+                id: o.id,
+                customerName: o.customerName,
+                totalAmount: Number(o.totalAmount),
+                orderDate: o.orderDate,
+                createdAt: o.createdAt,
+                employeeName: o.splits.map(s => s.employee?.fullName).join(', ') || o.staffCode || 'N/A',
+                isSplit: branchTotalPercent > 0 && branchTotalPercent < 100,
+                branchSharePercent: branchTotalPercent,
+                violatedItems: o.items.map(i => ({
+                    productName: i.product.name,
+                    unitPrice: Number(i.unitPrice),
+                    minPrice: Number(i.minPriceAtSale),
+                    splitUnitPrice: Number(i.unitPrice) * shareRatio,
+                    splitMinPrice: Number(i.minPriceAtSale) * shareRatio,
+                    quantity: i.quantity
+                }))
+            };
+        });
     }
 
     private async getDriverStats(employeeId?: string, startStr?: string, endStr?: string) {
@@ -1474,7 +1538,7 @@ export class DashboardService {
             order: {
                 status: { notIn: ['canceled', 'rejected'] },
                 isPaymentConfirmed: true,
-                confirmedAt: { gte: startDate, lte: endDate }
+                orderDate: { gte: orderStartDate, lte: orderEndDate }
             }
         };
 

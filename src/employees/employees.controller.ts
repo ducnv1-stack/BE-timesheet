@@ -72,6 +72,11 @@ export class EmployeesController {
         return this.employeesService.getPositions();
     }
 
+    @Get('departments')
+    getDepartments() {
+        return this.employeesService.getDepartments();
+    }
+
     @Get('performance/report')
     getPerformanceReport(
         @Query('month') month: string,

@@ -16,12 +16,12 @@ export class AttendancePoliciesController {
     }
 
     @Post()
-    create(@Body() data: { name: string, note?: string, latitude?: number, longitude?: number, radius?: number, days: any[] }) {
+    create(@Body() data: { name: string, note?: string, latitude?: number, longitude?: number, radius?: number, requireGPS?: boolean, configData?: any, days: any[] }) {
         return this.attendancePoliciesService.create(data);
     }
 
     @Patch(':id')
-    update(@Param('id') id: string, @Body() data: { name?: string, note?: string, latitude?: number, longitude?: number, radius?: number, days?: any[] }) {
+    update(@Param('id') id: string, @Body() data: { name?: string, note?: string, latitude?: number, longitude?: number, radius?: number, requireGPS?: boolean, configData?: any, days?: any[] }) {
         return this.attendancePoliciesService.update(id, data);
     }
 

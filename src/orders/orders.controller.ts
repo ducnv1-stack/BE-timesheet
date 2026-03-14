@@ -102,7 +102,8 @@ export class OrdersController {
         @Query('editTimeFilter') editTimeFilter?: string,
         @Query('confirmedStartDate') confirmedStartDate?: string,
         @Query('confirmedEndDate') confirmedEndDate?: string,
-        @Query('confirmedTimeFilter') confirmedTimeFilter?: string
+        @Query('confirmedTimeFilter') confirmedTimeFilter?: string,
+        @Query('debtOnly') debtOnly?: string
     ) {
         return this.ordersService.findAll(
             userId,
@@ -128,7 +129,8 @@ export class OrdersController {
             editTimeFilter,
             confirmedStartDate,
             confirmedEndDate,
-            confirmedTimeFilter
+            confirmedTimeFilter,
+            debtOnly
         );
     }
 

@@ -19,6 +19,7 @@ import { StocksModule } from './stocks/stocks.module';
 import { DepartmentsModule } from './departments/departments.module';
 import { PositionsModule } from './positions/positions.module';
 import { AttendancePoliciesModule } from './attendance-policies/attendance-policies.module';
+import { AttendanceExceptionRequestsModule } from './attendance-exception-requests/attendance-exception-requests.module';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { AttendancePoliciesModule } from './attendance-policies/attendance-polic
     DepartmentsModule,
     PositionsModule,
     AttendancePoliciesModule,
+    AttendanceExceptionRequestsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

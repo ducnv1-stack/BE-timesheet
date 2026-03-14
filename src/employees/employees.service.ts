@@ -128,12 +128,19 @@ export class EmployeesService {
     }
 
     async getPositions() {
-        const result = await this.prisma.employee.findMany({
-            where: { position: { not: '' } },
-            select: { position: true },
-            distinct: ['position'],
+        const positions = await this.prisma.position.findMany({
+            select: { name: true },
+            orderBy: { name: 'asc' }
         });
-        return result.map(e => e.position).filter(p => p !== null && p !== '');
+        return positions.map(p => p.name);
+    }
+
+    async getDepartments() {
+        const departments = await this.prisma.department.findMany({
+            select: { name: true },
+            orderBy: { name: 'asc' }
+        });
+        return departments.map(d => d.name);
     }
 
     async findOne(id: string) {

@@ -38,7 +38,16 @@ export class AttendancePoliciesService {
         return policy;
     }
 
-    async create(data: { name: string, note?: string, latitude?: number, longitude?: number, radius?: number, days: any[] }) {
+    async create(data: {
+        name: string;
+        note?: string;
+        latitude?: number;
+        longitude?: number;
+        radius?: number;
+        requireGPS?: boolean;
+        configData?: any;
+        days: any[];
+    }) {
         const exists = await this.prisma.attendancePolicy.findUnique({ where: { name: data.name } });
         if (exists) throw new BadRequestException('Tên chính sách đã tồn tại');
 
@@ -50,6 +59,8 @@ export class AttendancePoliciesService {
                 latitude: data.latitude,
                 longitude: data.longitude,
                 radius: data.radius,
+                requireGPS: data.requireGPS ?? true,
+                configData: data.configData ?? undefined,
                 days: {
                     create: data.days.map(day => ({
                         dayOfWeek: day.dayOfWeek,
@@ -68,7 +79,16 @@ export class AttendancePoliciesService {
         });
     }
 
-    async update(id: string, data: { name?: string, note?: string, latitude?: number, longitude?: number, radius?: number, days?: any[] }) {
+    async update(id: string, data: {
+        name?: string;
+        note?: string;
+        latitude?: number;
+        longitude?: number;
+        radius?: number;
+        requireGPS?: boolean;
+        configData?: any;
+        days?: any[];
+    }) {
         const policy = await this.prisma.attendancePolicy.findUnique({ 
             where: { id },
             include: { days: true }
@@ -80,7 +100,7 @@ export class AttendancePoliciesService {
             if (exists) throw new BadRequestException('Tên chính sách đã tồn tại');
         }
 
-        // Cập nhật thông tin chung
+        // Cập nhật thông tin chung + configData (nếu có)
         await this.prisma.attendancePolicy.update({
             where: { id },
             data: {
@@ -88,7 +108,9 @@ export class AttendancePoliciesService {
                 note: data.note,
                 latitude: data.latitude,
                 longitude: data.longitude,
-                radius: data.radius
+                radius: data.radius,
+                requireGPS: data.requireGPS,
+                ...(data.configData !== undefined ? { configData: data.configData } : {}),
             }
         });
 

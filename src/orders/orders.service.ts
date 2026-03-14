@@ -599,11 +599,31 @@ export class OrdersService {
         editTimeFilter?: string,
         confirmedStartDate?: string,
         confirmedEndDate?: string,
-        confirmedTimeFilter?: string
+        confirmedTimeFilter?: string,
+        debtOnly?: string
     ) {
         let whereClause: any = {
             status: { notIn: ['canceled', 'rejected'] }
         };
+
+        // 0. Handle debtOnly filter (Needs raw query IDs to work with Prisma pagination)
+        if (debtOnly === 'true') {
+            try {
+                const debtOrderIdResult = await this.prisma.$queryRawUnsafe<{ id: string }[]>(
+                    `SELECT o.id 
+                     FROM orders o
+                     LEFT JOIN payments p ON o.id = p.order_id
+                     WHERE o.status NOT IN ('canceled', 'rejected')
+                     AND o.is_payment_confirmed = false
+                     GROUP BY o.id
+                     HAVING (o.total_amount - COALESCE(SUM(p.amount), 0)) > 0.01`
+                );
+                const debtIds = debtOrderIdResult.map(o => o.id);
+                whereClause.id = { in: debtIds };
+            } catch (error) {
+                console.error('Error fetching debt order IDs:', error);
+            }
+        }
 
         // 1. Role-based Base Filter (Security & Scope)
         if (userId && roleCode) {
@@ -874,7 +894,18 @@ export class OrdersService {
                     ]
                 };
             } else if (tab === 'invoice') {
-                tabFilter = { isInvoiceIssued: false };
+                tabFilter = {
+                    AND: [
+                        { isInvoiceIssued: false },
+                        {
+                            payments: {
+                                some: {
+                                    paymentMethod: { in: ['TRANSFER_COMPANY', 'CARD', 'INSTALLMENT', 'CREDIT'] }
+                                }
+                            }
+                        }
+                    ]
+                };
             }
         }
 
@@ -948,12 +979,17 @@ export class OrdersService {
                 }
             }),
 
-            // Tab "Chờ xuất HĐ" (Tất cả đơn tồn đọng đến endDate)
+            // Tab "Chờ xuất HĐ" (Chỉ các đơn theo PTTT quy định - đến mốc endDate)
             this.prisma.order.count({
                 where: {
                     branchId: branchId && branchId !== 'all' ? branchId : whereClause.branchId,
                     status: { notIn: ['canceled', 'rejected'] },
                     isInvoiceIssued: false,
+                    payments: {
+                        some: {
+                            paymentMethod: { in: ['TRANSFER_COMPANY', 'CARD', 'INSTALLMENT', 'CREDIT'] }
+                        }
+                    },
                     createdAt: { lte: dateTimeFilter.lte }
                 }
             })

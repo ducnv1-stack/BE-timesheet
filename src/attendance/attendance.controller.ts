@@ -80,7 +80,27 @@ export class AttendanceController {
         checkInTime?: string;
         checkOutTime?: string;
         note?: string;
+        changedById: string;
     }) {
         return this.attendanceService.adjustAttendance(data);
+    }
+
+    @Get('audit-logs')
+    async getAuditLogs(
+        @Query('attendanceId') attendanceId?: string,
+        @Query('branchId') branchId?: string,
+        @Query('month') month?: string,
+        @Query('year') year?: string,
+        @Query('search') search?: string,
+    ) {
+        if (attendanceId) {
+            return this.attendanceService.getAuditLogs(attendanceId);
+        }
+        return this.attendanceService.getAllAuditLogs(
+            month ? parseInt(month) : undefined,
+            year ? parseInt(year) : undefined,
+            branchId,
+            search
+        );
     }
 }
