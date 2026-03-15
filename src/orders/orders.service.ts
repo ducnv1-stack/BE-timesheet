@@ -156,7 +156,18 @@ export class OrdersService {
             if (deliveries && deliveries.length > 0) {
                 dataToCreate.deliveries = {
                     create: await Promise.all(deliveries.map(async (d: any) => {
-                        const fee = await this.deliveryFeeRulesService.getDeliveryFee(d.category, orderData.branchId);
+                        let fee = await this.deliveryFeeRulesService.getDeliveryFee(d.category, orderData.branchId);
+
+                        // If driverId is provided, check if the employee is a MANAGER
+                        if (d.driverId) {
+                            const employee = await tx.employee.findUnique({
+                                where: { id: d.driverId },
+                                include: { user: { include: { role: true } } }
+                            });
+                            if (employee?.user?.role?.code === 'MANAGER') {
+                                fee = 0;
+                            }
+                        }
 
                         return {
                             driverId: d.driverId || null,
@@ -407,7 +418,18 @@ export class OrdersService {
                     deliveries: (deliveries !== undefined) ? {
                         deleteMany: {},
                         create: await Promise.all((deliveries || []).map(async (d: any) => {
-                            const fee = await this.deliveryFeeRulesService.getDeliveryFee(d.category, orderData.branchId || originalOrder.branchId);
+                            let fee = await this.deliveryFeeRulesService.getDeliveryFee(d.category, orderData.branchId || originalOrder.branchId);
+
+                            // If driverId is provided, check if the employee is a MANAGER
+                            if (d.driverId) {
+                                const employee = await tx.employee.findUnique({
+                                    where: { id: d.driverId },
+                                    include: { user: { include: { role: true } } }
+                                });
+                                if (employee?.user?.role?.code === 'MANAGER') {
+                                    fee = 0;
+                                }
+                            }
 
                             return {
                                 driverId: d.driverId || null,
