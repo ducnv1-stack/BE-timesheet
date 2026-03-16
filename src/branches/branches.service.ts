@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, BadRequestException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
@@ -39,8 +40,15 @@ export class BranchesService {
     }
 
     async remove(id: string) {
-        return this.prisma.branch.delete({
-            where: { id },
-        });
+        try {
+            return await this.prisma.branch.delete({
+                where: { id },
+            });
+        } catch (error) {
+            if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') {
+                throw new BadRequestException('Không thể xoá chi nhánh này vì đang có dữ liệu nhân viên, đơn hàng hoặc tồn kho liên quan.');
+            }
+            throw error;
+        }
     }
 }

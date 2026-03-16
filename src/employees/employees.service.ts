@@ -251,6 +251,8 @@ export class EmployeesService {
             const bday = new Date(updateData.birthday);
             (updateData as any).birthday = bday;
             (updateData as any).birthMonth = bday.getMonth() + 1;
+        } else if (updateData.birthday === null) {
+            (updateData as any).birthMonth = null;
         }
 
         if (updateData.joinDate) {
@@ -262,7 +264,7 @@ export class EmployeesService {
         }
 
         const updated = await this.prisma.employee.update({
-            where: { id },
+            where: { id: employee.id },
             data: {
                 ...updateData,
                 ...(branchId && { branchId }),
