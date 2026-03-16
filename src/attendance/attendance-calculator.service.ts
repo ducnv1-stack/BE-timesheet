@@ -163,17 +163,17 @@ export class AttendanceCalculatorService {
     const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
     
     // Day-specific OT override
+    const isOffDay = !schedule.is_working_day;
     const isDayOT = dailyRule?.is_off_day_ot || false;
     const isWeekendOTGlobal = isWeekend && (config.overtime_rules?.all_weekend_is_ot ?? false);
     
-    const isOffDay = !schedule.is_working_day || isDayOT || isWeekendOTGlobal;
-    
     // Determine if everything should be counted as OT
+    // 🚩 FIX: Only should be all OT if it is an OFF day
     const shouldAllBeOT = isOffDay && (
-        config.overtime_rules?.is_allowed || // Nếu cho phép OT nói chung
-        isDayOT || // Hoặc chính xác ngày này được tick OT
-        isWeekendOTGlobal || // Hoặc là cuối tuần và bật mode OT cuối tuần
-        config.overtime_rules?.all_off_day_is_ot // Hoặc bật mode mọi ngày nghỉ là OT
+        config.overtime_rules?.is_allowed || 
+        isDayOT || 
+        isWeekendOTGlobal || 
+        config.overtime_rules?.all_off_day_is_ot
     );
 
     if (shouldAllBeOT) {
@@ -254,9 +254,16 @@ export class AttendanceCalculatorService {
     }
 
     // OT calculation
-    if (config.overtime_rules?.is_allowed) {
-      const minToTrigger = config.overtime_rules.min_minutes_to_trigger || 0;
-      const otDiff = Math.floor((outVN.getTime() - expectedOutVN.getTime()) / 60000);
+    // 🚩 FIX: Allow OT if Master Switch is ON OR this specific day allows OT
+    const isOTAllowed = config.overtime_rules?.is_allowed || isDayOT;
+    
+    if (isOTAllowed) {
+      const minToTrigger = config.overtime_rules?.min_minutes_to_trigger || 0;
+      
+      // 🚩 FIX: OT start point should be the LATER of expected end time or actual check-in
+      const otStartPoint = Math.max(expectedOutVN.getTime(), inVN.getTime());
+      const otDiff = Math.floor((outVN.getTime() - otStartPoint) / 60000);
+      
       if (otDiff >= minToTrigger) {
         overtimeMinutes = otDiff;
         checkOutStatus = 'OVERTIME';
@@ -278,7 +285,7 @@ export class AttendanceCalculatorService {
     if (isFlexibleTheme || alwaysFullDay) {
       return {
         totalWorkMinutes,
-        overtimeMinutes: (isFlexibleTheme || !config.overtime_rules?.is_allowed) ? 0 : overtimeMinutes,
+        overtimeMinutes: isOTAllowed ? overtimeMinutes : 0,
         lateMinutes: (isRawTheme || ignoreLate) ? 0 : lateMinutes,
         earlyLeaveMinutes: (isRawTheme || ignoreEarly) ? 0 : earlyLeaveMinutes,
         checkInStatus: (isRawTheme || ignoreLate) ? 'ON_TIME' : checkInStatus,
