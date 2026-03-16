@@ -5,28 +5,38 @@ import * as path from 'path';
 const prisma = new PrismaClient();
 
 async function main() {
-    console.log('Exporting products and bonus rules...');
+    console.log('Exporting products and bonus policies...');
 
-    const products = await prisma.product.findMany({
+    const products = await (prisma.product as any).findMany({
         include: {
-            bonusRules: true,
+            bonusPolicies: {
+                include: { rules: true },
+                orderBy: { startDate: 'desc' }
+            },
+            minPricePolicies: true,
         },
     });
 
     const data = {
-        products: products.map(p => ({
+        products: products.map((p: any) => ({
             id: p.id,
             name: p.name,
             minPrice: p.minPrice.toString(),
             isHighEnd: p.isHighEnd,
             hotBonus: p.hotBonus.toString(),
             createdAt: p.createdAt,
-            bonusRules: p.bonusRules.map(br => ({
-                id: br.id,
-                minSellPrice: br.minSellPrice.toString(),
-                bonusAmount: br.bonusAmount.toString(),
-                salePercent: br.salePercent.toString(),
-                managerPercent: br.managerPercent.toString(),
+            bonusPolicies: (p.bonusPolicies || []).map((pol: any) => ({
+                id: pol.id,
+                name: pol.name,
+                startDate: pol.startDate,
+                endDate: pol.endDate,
+                rules: (pol.rules || []).map((br: any) => ({
+                    id: br.id,
+                    minSellPrice: br.minSellPrice.toString(),
+                    bonusAmount: br.bonusAmount.toString(),
+                    salePercent: br.salePercent.toString(),
+                    managerPercent: br.managerPercent.toString(),
+                })),
             })),
         })),
     };

@@ -23,12 +23,36 @@ export class OrdersService {
             let totalAmount = new Decimal(0);
             let calculatedProductBonusTotal = new Decimal(0);
 
+            // 1. Batch fetch products and their applicable min price policies for performance
+            const productIds = items.map(item => item.productId);
+            const orderDate = orderData.orderDate ? new Date(orderData.orderDate) : new Date();
+
+            const products = await (tx.product as any).findMany({
+                where: { id: { in: productIds } },
+                include: {
+                    bonusPolicies: {
+                        where: {
+                            startDate: { lte: orderDate },
+                            OR: [{ endDate: null }, { endDate: { gte: orderDate } }]
+                        },
+                        orderBy: { startDate: 'desc' },
+                        include: { rules: { orderBy: { minSellPrice: 'desc' } } }
+                    },
+                    minPricePolicies: {
+                        where: {
+                            startDate: { lte: orderDate },
+                            OR: [{ endDate: null }, { endDate: { gte: orderDate } }]
+                        },
+                        orderBy: { startDate: 'desc' }
+                    }
+                }
+            });
+
+            const productMap = new Map(products.map((p: any) => [p.id, p]));
+
             const itemProcessing = await Promise.all(
                 items.map(async (item: any) => {
-                    const product = await tx.product.findUnique({
-                        where: { id: item.productId },
-                        include: { bonusRules: { orderBy: { minSellPrice: 'desc' } } },
-                    });
+                    const product = productMap.get(item.productId);
 
                     if (!product) {
                         throw new BadRequestException(`Product ${item.productId} not found`);
@@ -38,20 +62,27 @@ export class OrdersService {
                     totalAmount = totalAmount.add(lineTotal);
 
                     // Logic Snapshot: Min Price & Bonus
+                    // 🆕 Get dynamic min price from policy or fallback to legacy product.minPrice (if still exists during transition)
+                    const applicablePolicy = (product as any).minPricePolicies?.[0]; // Should only be one due to logic or we take the first valid one
+                    const minPrice = applicablePolicy ? applicablePolicy.minPrice : (product as any).minPrice || new Decimal(0);
+
                     // Upgrade logic: if isUpgrade, check (unitPrice + oldOrderAmount) >= minPrice
                     const effectivePrice = createOrderDto.isUpgrade 
                         ? new Decimal(item.unitPrice).add(new Decimal(createOrderDto.oldOrderAmount || 0))
                         : new Decimal(item.unitPrice);
 
-                    const isBelowMin = effectivePrice.lt(product.minPrice);
+                    const isBelowMin = effectivePrice.lt(minPrice);
 
                     // Find applicable bonus
                     let bonusAmount = new Decimal(0);
                     let saleBonusAmount = new Decimal(0);
                     let managerBonusAmount = new Decimal(0);
 
-                    if (product.isHighEnd) {
-                        const applicableRule = product.bonusRules.find(rule =>
+                    if ((product as any)?.isHighEnd) {
+                        // 🆕 Get bonus rules from the most applicable policy (sorted by startDate desc)
+                        const applicableBonusPolicy = (product as any).bonusPolicies?.[0];
+                        const bonusRules = applicableBonusPolicy?.rules || [];
+                        const applicableRule = bonusRules.find((rule: any) =>
                             effectivePrice.gte(rule.minSellPrice)
                         );
 
@@ -68,7 +99,7 @@ export class OrdersService {
                         quantity: item.quantity,
                         unitPrice: item.unitPrice,
                         totalPrice: lineTotal,
-                        minPriceAtSale: product.minPrice,
+                        minPriceAtSale: minPrice,
                         isBelowMin,
                         bonusAmount,
                         saleBonusAmount,
@@ -298,29 +329,61 @@ export class OrdersService {
 
             // 1. Recalculate if items provided
             if (items) {
+                // 1. Batch fetch products and their applicable min price policies for performance
+                const productIds = items.map(item => item.productId);
+                const orderDate = updateOrderDto.orderDate ? new Date(updateOrderDto.orderDate) : originalOrder.orderDate;
+
+                const products = await (tx.product as any).findMany({
+                    where: { id: { in: productIds } },
+                    include: {
+                        bonusPolicies: {
+                            where: {
+                                startDate: { lte: orderDate },
+                                OR: [{ endDate: null }, { endDate: { gte: orderDate } }]
+                            },
+                            orderBy: { startDate: 'desc' },
+                            include: { rules: { orderBy: { minSellPrice: 'desc' } } }
+                        },
+                        minPricePolicies: {
+                            where: {
+                                startDate: { lte: orderDate },
+                                OR: [{ endDate: null }, { endDate: { gte: orderDate } }]
+                            },
+                            orderBy: { startDate: 'desc' }
+                        }
+                    }
+                });
+
+                const productMap = new Map(products.map((p: any) => [p.id, p]));
+
                 itemProcessing = await Promise.all(
                     items.map(async (item) => {
-                        const product = await tx.product.findUnique({
-                            where: { id: item.productId },
-                            include: { bonusRules: { orderBy: { minSellPrice: 'desc' } } },
-                        });
+                        const product = productMap.get(item.productId);
 
                         if (!product) throw new BadRequestException(`Product ${item.productId} not found`);
 
                         const lineTotal = new Decimal(item.unitPrice).mul(item.quantity);
                         totalAmount = totalAmount.add(lineTotal);
+                        
+                        // 🆕 Get dynamic min price from policy for the order date
+                        const applicablePolicy = (product as any).minPricePolicies?.[0];
+                        const minPrice = applicablePolicy ? applicablePolicy.minPrice : (product as any).minPrice || new Decimal(0);
+
                         const effectivePrice = (updateOrderDto.isUpgrade || originalOrder.isUpgrade)
                             ? new Decimal(item.unitPrice).add(new Decimal(updateOrderDto.oldOrderAmount || originalOrder.oldOrderAmount || 0))
                             : new Decimal(item.unitPrice);
 
-                        const isBelowMin = effectivePrice.lt(product.minPrice);
+                        const isBelowMin = effectivePrice.lt(minPrice);
 
                         let bonusAmount = new Decimal(0);
                         let saleBonusAmount = new Decimal(0);
                         let managerBonusAmount = new Decimal(0);
 
-                        if (product.isHighEnd) {
-                            const rule = product.bonusRules.find(r => effectivePrice.gte(r.minSellPrice));
+                        if ((product as any)?.isHighEnd) {
+                            // 🆕 Get bonus rules from the most applicable policy (sorted by startDate desc)
+                            const applicableBonusPolicy = (product as any).bonusPolicies?.[0];
+                            const bonusRules = applicableBonusPolicy?.rules || [];
+                            const rule = bonusRules.find((r: any) => effectivePrice.gte(r.minSellPrice));
                             if (rule) {
                                 bonusAmount = rule.bonusAmount;
                                 saleBonusAmount = bonusAmount.mul(rule.salePercent).div(100);
@@ -328,13 +391,12 @@ export class OrdersService {
                                 calculatedProductBonusTotal = calculatedProductBonusTotal.add(bonusAmount.mul(item.quantity));
                             }
                         }
-
                         return {
                             productId: item.productId,
                             quantity: item.quantity,
                             unitPrice: item.unitPrice,
                             totalPrice: lineTotal,
-                            minPriceAtSale: product.minPrice,
+                            minPriceAtSale: minPrice,
                             isBelowMin,
                             bonusAmount,
                             saleBonusAmount,

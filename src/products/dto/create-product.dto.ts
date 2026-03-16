@@ -17,6 +17,18 @@ export class CreateProductBonusRuleDto {
     managerPercent?: number;
 }
 
+export class CreateProductMinPricePolicyDto {
+    @IsNumber()
+    minPrice: number;
+
+    @IsString()
+    startDate: string;
+
+    @IsString()
+    @IsOptional()
+    endDate?: string;
+}
+
 export class CreateProductDto {
     @IsString()
     name: string;
@@ -37,4 +49,10 @@ export class CreateProductDto {
     @ValidateNested({ each: true })
     @Type(() => CreateProductBonusRuleDto)
     bonusRules?: CreateProductBonusRuleDto[];
+
+    @IsArray()
+    @IsOptional()
+    @ValidateNested({ each: true })
+    @Type(() => CreateProductMinPricePolicyDto)
+    minPricePolicies?: CreateProductMinPricePolicyDto[];
 }

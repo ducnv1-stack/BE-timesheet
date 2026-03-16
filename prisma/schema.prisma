@@ -446,12 +446,28 @@ model Product {
   createdAt DateTime @default(now()) @map("created_at")
 
   orderItems        OrderItem[]
-  bonusRules        ProductBonusRule[]
+  bonusPolicies     ProductBonusPolicy[]
+  minPricePolicies  ProductMinPricePolicy[]
   branchStocks      BranchStock[]
   stockItems        StockItem[]
   stockTransactions StockTransaction[]
 
   @@map("products")
+}
+
+// 5.1.1 Bảng product_min_price_policies - Chính sách giá min theo thời gian
+model ProductMinPricePolicy {
+  id        String   @id @default(uuid()) @db.Uuid
+  productId String   @map("product_id") @db.Uuid
+  minPrice  Decimal  @map("min_price") @db.Decimal(20, 2)
+  startDate DateTime @map("start_date") @db.Date
+  endDate   DateTime? @map("end_date") @db.Date
+  createdAt DateTime @default(now()) @map("created_at")
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, startDate, endDate])
+  @@map("product_min_price_policies")
 }
 
 // 🟩 gifts – Quà tặng kèm
@@ -480,16 +496,32 @@ model OrderGift {
   @@map("order_gifts")
 }
 
-// 5.2 Bảng product_bonus_rules
+// 5.2 Bảng product_bonus_policies - Chính sách thưởng nóng theo thời gian
+model ProductBonusPolicy {
+  id        String   @id @default(uuid()) @db.Uuid
+  productId String   @map("product_id") @db.Uuid
+  name      String?  @map("name")
+  startDate DateTime @map("start_date") @db.Date
+  endDate   DateTime? @map("end_date") @db.Date
+  createdAt DateTime @default(now()) @map("created_at")
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  rules   ProductBonusRule[]
+
+  @@index([productId, startDate, endDate])
+  @@map("product_bonus_policies")
+}
+
+// 5.3 Bảng product_bonus_rules - Chi tiết định mức thưởng
 model ProductBonusRule {
   id             String  @id @default(uuid()) @db.Uuid
-  productId      String  @map("product_id") @db.Uuid
+  policyId       String  @map("policy_id") @db.Uuid
   minSellPrice   Decimal @map("min_sell_price") @db.Decimal(20, 2)
   bonusAmount    Decimal @map("bonus_amount") @db.Decimal(20, 2)
   salePercent    Decimal @map("sale_percent") @db.Decimal(5, 2)
   managerPercent Decimal @map("manager_percent") @db.Decimal(5, 2)
 
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  policy ProductBonusPolicy @relation(fields: [policyId], references: [id], onDelete: Cascade)
 
   @@map("product_bonus_rules")
 }

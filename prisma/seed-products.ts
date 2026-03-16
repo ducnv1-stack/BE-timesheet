@@ -38,23 +38,30 @@ async function main() {
             },
         });
 
-        // Handle Bonus Rules
-        // Note: For simplicity and since these are linked to product, we delete and recreate or upsert
-        // If there are many rules, upsert is better. Let's do deleteMany + createMany for simplicity
-        // because it's a seed script.
-        await prisma.productBonusRule.deleteMany({ where: { productId: p.id } });
+        // Handle Bonus Policies: delete old policies (cascade deletes rules) then recreate
+        await (prisma as any).productBonusPolicy.deleteMany({ where: { productId: p.id } });
 
-        for (const br of p.bonusRules) {
-            await prisma.productBonusRule.create({
-                data: {
-                    id: br.id,
-                    productId: p.id,
-                    minSellPrice: br.minSellPrice,
-                    bonusAmount: br.bonusAmount,
-                    salePercent: br.salePercent,
-                    managerPercent: br.managerPercent,
-                }
-            });
+        if (p.bonusPolicies) {
+            for (const pol of p.bonusPolicies) {
+                await (prisma as any).productBonusPolicy.create({
+                    data: {
+                        id: pol.id,
+                        productId: p.id,
+                        name: pol.name || null,
+                        startDate: new Date(pol.startDate),
+                        endDate: pol.endDate ? new Date(pol.endDate) : null,
+                        rules: {
+                            create: (pol.rules || []).map((br: any) => ({
+                                id: br.id,
+                                minSellPrice: br.minSellPrice,
+                                bonusAmount: br.bonusAmount,
+                                salePercent: br.salePercent,
+                                managerPercent: br.managerPercent,
+                            }))
+                        }
+                    }
+                });
+            }
         }
     }
 

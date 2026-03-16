@@ -31,4 +31,32 @@ export class ProductsController {
     remove(@Param('id') id: string) {
         return this.productsService.remove(id);
     }
+
+    // 🆕 Bonus Policy CRUD
+    @Get(':id/bonus-policies')
+    findBonusPolicies(@Param('id') id: string) {
+        return this.productsService.findBonusPolicies(id);
+    }
+
+    @Post(':id/bonus-policies')
+    createBonusPolicy(@Param('id') id: string, @Body() body: any) {
+        return this.productsService.createBonusPolicy(id, body);
+    }
+
+    @Patch(':id/bonus-policies/:policyId')
+    updateBonusPolicy(
+        @Param('id') id: string,
+        @Param('policyId') policyId: string,
+        @Body() body: any
+    ) {
+        return this.productsService.updateBonusPolicy(id, policyId, body);
+    }
+
+    @Delete(':id/bonus-policies/:policyId')
+    deleteBonusPolicy(
+        @Param('id') id: string,
+        @Param('policyId') policyId: string
+    ) {
+        return this.productsService.deleteBonusPolicy(policyId);
+    }
 }
