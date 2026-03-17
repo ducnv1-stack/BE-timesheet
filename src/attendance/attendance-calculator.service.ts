@@ -41,6 +41,12 @@ export interface AttendanceConfig {
     all_weekend_is_ot?: boolean;
     all_off_day_is_ot?: boolean;
   };
+  half_day_split?: {
+    enabled: boolean;
+    morning_end: string;   // Mốc kết thúc ca Sáng, ví dụ "12:00"
+    afternoon_start: string; // Mốc bắt đầu ca Chiều, ví dụ "13:30"
+    spanning_threshold_minutes?: number; // Ngưỡng lấn ca tối thiểu (mặc định 30)
+  };
   location_constraints?: {
     require_gps: boolean;
     allowed_zones?: string[];
@@ -56,6 +62,7 @@ export interface AttendanceEvaluationResult {
   checkInStatus: string;
   checkOutStatus: string;
   dailyStatus: string;
+  workCount: number; // 1.0 = cả ngày, 0.5 = nửa ngày
 }
 
 @Injectable()
@@ -152,6 +159,7 @@ export class AttendanceCalculatorService {
         checkInStatus: 'ON_TIME',
         checkOutStatus: 'ON_TIME',
         dailyStatus: 'FULL_DAY',
+        workCount: 1.0,
       };
     }
 
@@ -208,6 +216,7 @@ export class AttendanceCalculatorService {
         checkInStatus: 'ON_TIME',
         checkOutStatus: 'OVERTIME',
         dailyStatus: 'FULL_DAY',
+        workCount: 1.0,
       };
     }
 
@@ -275,6 +284,75 @@ export class AttendanceCalculatorService {
       overtimeMinutes = Math.min(overtimeMinutes, config.overtime_rules.capped_hours * 60);
     }
 
+    // 🆕 Tự động nhận diện ca Sáng/Chiều/Hành chính
+    let workCount = 1.0;
+    let detectedShift = 'FULL_DAY'; // FULL_DAY | HALF_DAY_MORNING | HALF_DAY_AFTERNOON
+
+    if (config.half_day_split?.enabled) {
+      const morningEndStr = config.half_day_split.morning_end || '12:00';
+      const afternoonStartStr = config.half_day_split.afternoon_start || '13:30';
+      
+      const [mE_H, mE_M] = morningEndStr.split(':').map(Number);
+      const [aS_H, aS_M] = afternoonStartStr.split(':').map(Number);
+
+      // Mốc VN thực tế từ checkin/checkout
+      const curInH = (checkInTimeUTC.getUTCHours() + 7) % 24;
+      const curInM = checkInTimeUTC.getUTCMinutes();
+      const curOutH = (checkOutTimeUTC.getUTCHours() + 7) % 24;
+      const curOutM = checkOutTimeUTC.getUTCMinutes();
+
+      // Mốc nhận diện vào ca nào: Nếu vào trước khi kết thúc ca sáng (+ tí ân hạn 15p) -> Coi như bắt đầu từ sáng
+      const isStartingMorning = (curInH < mE_H) || (curInH === mE_H && curInM <= mE_M + 15);
+
+      if (isStartingMorning) {
+        // Quy tắc: Phải lấn sang ca chiều ít nhất X phút mới tính Hành chính (1.0)
+        const spanningThreshold = config.half_day_split.spanning_threshold_minutes ?? 30;
+        const afternoonThresholdH = aS_H + Math.floor((aS_M + spanningThreshold) / 60);
+        const afternoonThresholdM = (aS_M + spanningThreshold) % 60;
+        
+        const isSpanningIntoAfternoonSeriously = (curOutH > afternoonThresholdH) || (curOutH === afternoonThresholdH && curOutM >= afternoonThresholdM);
+        
+        if (isSpanningIntoAfternoonSeriously) {
+          workCount = 1.0;
+          detectedShift = 'FULL_DAY';
+        } else {
+          workCount = 0.5;
+          detectedShift = 'HALF_DAY_MORNING';
+          
+          // Khi là Ca Sáng đơn thuần:
+          // Trễ tính theo mốc bắt đầu sáng (08:00)
+          lateMinutes = Math.max(0, Math.floor((inVN.getTime() - expectedInVN.getTime()) / 60000));
+          
+          // Sớm tính theo mốc kết thúc sáng (morning_end hoặc break_start)
+          const morningLimit = schedule.break_start || morningEndStr;
+          const [mlH, mlM] = morningLimit.split(':').map(Number);
+          const morningEndLimitVN = new Date(inVN);
+          morningEndLimitVN.setUTCHours((mlH - 7 + 24) % 24, mlM, 0, 0);
+          
+          const earlyGraceHalf = config.attendance_calculation?.early_leave_rules?.grace_minutes || 0;
+          const diffOutMorning = Math.floor((morningEndLimitVN.getTime() - checkOutTimeUTC.getTime()) / 60000);
+          earlyLeaveMinutes = diffOutMorning > earlyGraceHalf ? diffOutMorning : 0;
+          checkOutStatus = earlyLeaveMinutes > 0 ? 'EARLY_LEAVE' : 'ON_TIME';
+        }
+      } else {
+        // Vào ca muộn (sau mốc sáng) -> Mặc định là Ca Chiều
+        workCount = 0.5;
+        detectedShift = 'HALF_DAY_AFTERNOON';
+        
+        // Trễ tính theo mốc bắt đầu chiều (afternoon_start)
+        const afternoonStartVN = new Date(inVN);
+        afternoonStartVN.setUTCHours((aS_H - 7 + 24) % 24, aS_M, 0, 0);
+        
+        const lateGraceHalf = config.attendance_calculation?.late_rules?.grace_minutes || 0;
+        const diffInAfternoon = Math.floor((checkInTimeUTC.getTime() - afternoonStartVN.getTime()) / 60000);
+        lateMinutes = diffInAfternoon > lateGraceHalf ? diffInAfternoon : 0;
+        checkInStatus = lateMinutes > 30 ? 'LATE_SERIOUS' : (lateMinutes > 0 ? 'LATE' : 'ON_TIME');
+        
+        // Sớm tính theo mốc kết thúc ngày (17:30)
+        earlyLeaveMinutes = Math.max(0, Math.floor((expectedOutVN.getTime() - outVN.getTime()) / 60000));
+      }
+    }
+
     // Finalize result based on granular flags or legacy themes
     const isFlexibleTheme = config.theme === 'FLEXIBLE' as any;
     const isRawTheme = config.theme === 'RAW_TRACKING' as any;
@@ -282,23 +360,31 @@ export class AttendanceCalculatorService {
     const ignoreLate = config.attendance_calculation?.ignore_late;
     const ignoreEarly = config.attendance_calculation?.ignore_early;
 
-    if (isFlexibleTheme || alwaysFullDay) {
-      return {
-        totalWorkMinutes,
-        overtimeMinutes: isOTAllowed ? overtimeMinutes : 0,
-        lateMinutes: (isRawTheme || ignoreLate) ? 0 : lateMinutes,
-        earlyLeaveMinutes: (isRawTheme || ignoreEarly) ? 0 : earlyLeaveMinutes,
-        checkInStatus: (isRawTheme || ignoreLate) ? 'ON_TIME' : checkInStatus,
-        checkOutStatus: (isRawTheme || ignoreEarly) ? (overtimeMinutes > 0 ? 'OVERTIME' : 'ON_TIME') : (overtimeMinutes > 0 ? 'OVERTIME' : checkOutStatus),
-        dailyStatus: 'FULL_DAY',
-      };
-    }
-
-    // Standard result (e.g. FIXED_TIME)
     const finalCheckInStatus = ignoreLate ? 'ON_TIME' : checkInStatus;
     const finalCheckOutStatus = ignoreEarly && checkOutStatus === 'EARLY_LEAVE' ? 'ON_TIME' : checkOutStatus;
     const finalLateMinutes = ignoreLate ? 0 : lateMinutes;
     const finalEarlyLeaveMinutes = ignoreEarly ? 0 : earlyLeaveMinutes;
+
+    // Xác định dailyStatus cuối cùng
+    let dailyStatus = detectedShift;
+    
+    // NẾU LÀ HÀNH CHÍNH, LUÔN GIỮ NHÃN FULL_DAY (Hành chính)
+    // KHÔNG CÒN GÁN LATE_DAY ĐỂ TRÁNH RỐI MẮT
+    // Nếu là nửa công, kể cả có trễ/sớm vẫn giữ nhãn Ca Sáng/Ca Chiều để người dùng dễ theo dõi ca
+
+    // Xử lý logic Theme FLEXIBLE hoặc flag alwaysFullDay
+    if (isFlexibleTheme || alwaysFullDay) {
+        return {
+            totalWorkMinutes,
+            overtimeMinutes: isOTAllowed ? overtimeMinutes : 0,
+            lateMinutes: (isRawTheme || ignoreLate) ? 0 : finalLateMinutes,
+            earlyLeaveMinutes: (isRawTheme || ignoreEarly) ? 0 : finalEarlyLeaveMinutes,
+            checkInStatus: (isRawTheme || ignoreLate) ? 'ON_TIME' : finalCheckInStatus,
+            checkOutStatus: (isRawTheme || ignoreEarly) ? (overtimeMinutes > 0 ? 'OVERTIME' : 'ON_TIME') : (overtimeMinutes > 0 ? 'OVERTIME' : finalCheckOutStatus),
+            dailyStatus: detectedShift === 'FULL_DAY' ? 'FULL_DAY' : detectedShift,
+            workCount,
+        };
+    }
 
     return {
       totalWorkMinutes,
@@ -307,7 +393,8 @@ export class AttendanceCalculatorService {
       earlyLeaveMinutes: finalEarlyLeaveMinutes,
       checkInStatus: finalCheckInStatus,
       checkOutStatus: finalCheckOutStatus,
-      dailyStatus: (finalLateMinutes > 0 || finalEarlyLeaveMinutes > 0) ? 'LATE_DAY' : 'FULL_DAY',
+      dailyStatus,
+      workCount,
     };
   }
 }

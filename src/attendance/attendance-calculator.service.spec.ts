@@ -15,10 +15,16 @@ describe('AttendanceCalculatorService', () => {
     it('Phải trả về 1 công (FULL_DAY), 0 OT, ko trễ ko sớm dù check-in giờ nào', () => {
       const config: AttendanceConfig = {
         theme: 'FLEXIBLE',
+        attendance_calculation: {
+          base_value: 1,
+          ignore_late: true,
+          ignore_early: true,
+          always_full_day: true,
+        },
       };
       
-      const inTime = new Date('2023-10-15T07:00:00Z'); // 14:00 VN
-      const outTime = new Date('2023-10-15T07:05:00Z'); // 14:05 VN (làm 5 phút)
+      const inTime = new Date('2023-10-16T07:00:00Z'); // 14:00 VN (Thứ 2)
+      const outTime = new Date('2023-10-16T07:05:00Z'); // 14:05 VN (làm 5 phút)
 
       const result = service.evaluateAttendance(config, inTime, outTime);
 
@@ -29,6 +35,7 @@ describe('AttendanceCalculatorService', () => {
       expect(result.lateMinutes).toBe(0);
       expect(result.earlyLeaveMinutes).toBe(0);
       expect(result.overtimeMinutes).toBe(0);
+      expect(result.workCount).toBe(1.0);
     });
   });
 
@@ -131,8 +138,9 @@ describe('AttendanceCalculatorService', () => {
   describe('evaluateCheckIn', () => {
     it('Phải trả về ON_TIME cho FLEXIBLE', () => {
       const config: AttendanceConfig = { theme: 'FLEXIBLE' };
-      const now = new Date();
-      const result = service.evaluateCheckIn(config, now);
+      // Dùng thời gian cố định trong giờ làm việc (08:00 VN = 01:00 UTC)
+      const fixedTime = new Date('2023-10-16T01:00:00Z');
+      const result = service.evaluateCheckIn(config, fixedTime);
       expect(result.checkInStatus).toBe('ON_TIME');
       expect(result.lateMinutes).toBe(0);
     });

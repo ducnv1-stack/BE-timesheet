@@ -349,12 +349,13 @@ export class AttendanceService {
         let overtimeMinutes = 0;
         let totalWorkMinutes = 0;
         let dailyStatus = attendance.dailyStatus || 'FULL_DAY';
+        let workCount: number | undefined = undefined;
 
         // 🚀 NEW ENGINE: Nếu policy có configData -> dùng Engine mới
         const configData = (policy as any)?.configData as AttendanceConfig | null;
 
         if (configData && attendance.checkInTime) {
-            // Dùng Engine mới để tính checkout + OT + tổng giờ làm
+            // Dùng Engine mới để tính checkout + OT + tổng giờ làm + số công
             const engineResult = this.calculator.evaluateAttendance(
                 configData,
                 attendance.checkInTime,
@@ -365,14 +366,17 @@ export class AttendanceService {
             overtimeMinutes = engineResult.overtimeMinutes;
             totalWorkMinutes = engineResult.totalWorkMinutes;
             dailyStatus = engineResult.dailyStatus;
+            workCount = engineResult.workCount;
         } else if (attendance.policyDay && attendance.checkInTime) {
             // ... (legacy logic) ...
             totalWorkMinutes = Math.floor((now.getTime() - attendance.checkInTime.getTime()) / 60000);
             dailyStatus = ((attendance.checkInStatus?.startsWith('LATE')) || checkOutStatus === 'EARLY_LEAVE') ? 'LATE_DAY' : 'FULL_DAY';
+            workCount = 1.0;
         } else if (attendance.shift && attendance.checkInTime) {
             // ... (legacy logic) ...
             totalWorkMinutes = Math.floor((now.getTime() - attendance.checkInTime.getTime()) / 60000);
             dailyStatus = ((attendance.checkInStatus?.startsWith('LATE')) || checkOutStatus === 'EARLY_LEAVE') ? 'LATE_DAY' : 'FULL_DAY';
+            workCount = 1.0;
         }
 
         return this.prisma.attendance.update({
@@ -388,6 +392,7 @@ export class AttendanceService {
                 overtimeMinutes,
                 earlyLeaveMinutes,
                 dailyStatus,
+                workCount,
                 note: attendance.note ? `${attendance.note} | ${dto.note}` : dto.note,
             }
         });
@@ -593,6 +598,7 @@ export class AttendanceService {
         let checkOutStatus = 'ON_TIME';
         let totalWorkMinutes = 0;
         let dailyStatus = 'FULL_DAY';
+        let workCount: number | undefined = undefined;
 
         // 🚀 CALCULATION ENGINE
         if (configData && checkInDate && checkOutDate) {
@@ -604,6 +610,7 @@ export class AttendanceService {
             overtimeMinutes = engineResult.overtimeMinutes;
             totalWorkMinutes = engineResult.totalWorkMinutes;
             dailyStatus = engineResult.dailyStatus;
+            workCount = engineResult.workCount;
         } else if (configData && checkInDate) {
             const engineResult = this.calculator.evaluateCheckIn(configData, checkInDate);
             checkInStatus = engineResult.checkInStatus;
@@ -691,6 +698,7 @@ export class AttendanceService {
                 overtimeMinutes,
                 totalWorkMinutes,
                 dailyStatus,
+                workCount,
                 isManualOverride: true,
                 approvedById: data.changedById,
                 attendancePolicyDayId: policyDay?.id,

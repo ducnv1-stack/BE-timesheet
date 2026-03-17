@@ -671,6 +671,7 @@ model Attendance {
   overtimeMinutes   Int?   @map("overtime_minutes")
   lateMinutes       Int?   @map("late_minutes")
   earlyLeaveMinutes Int?   @map("early_leave_minutes")
+  workCount         Decimal? @map("work_count") @db.Decimal(3, 2) // Số công: 1.0 (cả ngày), 0.5 (nửa ngày)
 
   attendancePolicyDayId String?  @map("attendance_policy_day_id") @db.Uuid
   
