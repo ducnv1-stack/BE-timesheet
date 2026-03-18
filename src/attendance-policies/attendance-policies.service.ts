@@ -71,7 +71,12 @@ export class AttendancePoliciesService {
                         otMultiplier: day.otMultiplier ?? 1.5,
                         requireGPS: day.requireGPS ?? true,
                         workCount: day.workCount ?? 1.0,
-                        isFlexible: day.isFlexible ?? false
+                        isFlexible: day.isFlexible ?? false,
+                        hasShifts: day.hasShifts ?? false,
+                        shift1EndTime: day.shift1EndTime,
+                        shift2StartTime: day.shift2StartTime,
+                        shift1WorkCount: day.shift1WorkCount ?? 0.5,
+                        shift2WorkCount: day.shift2WorkCount ?? 0.5
                     }))
                 }
             },
@@ -132,7 +137,12 @@ export class AttendancePoliciesService {
                         otMultiplier: day.otMultiplier ?? 1.5,
                         requireGPS: day.requireGPS,
                         workCount: day.workCount ?? 1.0,
-                        isFlexible: day.isFlexible
+                        isFlexible: day.isFlexible,
+                        hasShifts: day.hasShifts,
+                        shift1EndTime: day.shift1EndTime,
+                        shift2StartTime: day.shift2StartTime,
+                        shift1WorkCount: day.shift1WorkCount ?? 0.5,
+                        shift2WorkCount: day.shift2WorkCount ?? 0.5
                     },
                     create: {
                         attendancePolicyId: id,
@@ -144,7 +154,12 @@ export class AttendancePoliciesService {
                         otMultiplier: day.otMultiplier ?? 1.5,
                         requireGPS: day.requireGPS ?? true,
                         workCount: day.workCount ?? 1.0,
-                        isFlexible: day.isFlexible ?? false
+                        isFlexible: day.isFlexible ?? false,
+                        hasShifts: day.hasShifts ?? false,
+                        shift1EndTime: day.shift1EndTime,
+                        shift2StartTime: day.shift2StartTime,
+                        shift1WorkCount: day.shift1WorkCount ?? 0.5,
+                        shift2WorkCount: day.shift2WorkCount ?? 0.5
                     }
                 });
             }

@@ -62,7 +62,9 @@ export class AuthService {
         }
 
         const isMatch = await bcrypt.compare(password, user.passwordHash);
+        console.log(`[AuthService] verifyPassword for userId=${userId}: match=${isMatch}`);
         if (!isMatch) {
+            console.log(`[AuthService] Password mismatch. Input length: ${password.length}, Hash starts with: ${user.passwordHash.substring(0, 10)}`);
             throw new UnauthorizedException('Mật khẩu không chính xác');
         }
 

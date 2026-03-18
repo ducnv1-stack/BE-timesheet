@@ -292,6 +292,13 @@ model AttendancePolicyDay {
   workCount          Decimal  @default(1.0) @map("work_count") @db.Decimal(3, 2) // Số công (ví dụ 1.0 hoặc 0.5)
   isFlexible         Boolean  @default(false) @map("is_flexible") // Chế độ linh hoạt (chỉ ghi nhận giờ, không tính muộn/sớm)
 
+  // 🆕 Support for 2 shifts
+  hasShifts          Boolean  @default(false) @map("has_shifts")
+  shift1EndTime      String?  @map("shift1_end_time")  // "12:00"
+  shift2StartTime    String?  @map("shift2_start_time") // "13:30"
+  shift1WorkCount    Decimal  @default(0.5) @map("shift1_work_count") @db.Decimal(3, 2)
+  shift2WorkCount    Decimal  @default(0.5) @map("shift2_work_count") @db.Decimal(3, 2)
+
   policy AttendancePolicy @relation(fields: [attendancePolicyId], references: [id], onDelete: Cascade)
   attendances Attendance[]
 
