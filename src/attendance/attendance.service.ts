@@ -465,9 +465,13 @@ export class AttendanceService {
         const summary = employees.map(emp => {
             const empAttendance = attendanceRecords.filter(a => a.employeeId === emp.id);
 
-            const totalWorkDays = empAttendance.filter(a => a.checkInTime).length;
+            const totalWorkCount = empAttendance.reduce((acc, a) => acc + (Number(a.workCount) || 0), 0);
+            const fullDays = empAttendance.filter(a => Number(a.workCount) >= 1.0).length;
+            const halfDaysCount = empAttendance.filter(a => Number(a.workCount) > 0 && Number(a.workCount) < 1.0).length;
+            const halfDaysTotal = empAttendance.filter(a => Number(a.workCount) > 0 && Number(a.workCount) < 1.0).reduce((acc, a) => acc + (Number(a.workCount) || 0), 0);
             const lateDays = empAttendance.filter(a => a.checkInStatus === 'LATE' || a.checkInStatus === 'LATE_SERIOUS').length;
             const earlyLeaveDays = empAttendance.filter(a => a.checkOutStatus === 'EARLY_LEAVE').length;
+            const absentDaysCount = empAttendance.filter(a => a.dailyStatus?.startsWith('ABSENT')).length;
             const totalOvertimeMinutes = empAttendance.reduce((acc, a) => acc + (a.overtimeMinutes || 0), 0);
 
             return {
@@ -477,9 +481,13 @@ export class AttendanceService {
                 avatarUrl: emp.avatarUrl,
                 branchName: emp.branch.name,
                 position: emp.pos?.name || 'Chưa gán',
-                totalWorkDays,
+                totalWorkCount,
+                fullDays,
+                halfDaysCount,
+                halfDaysTotal,
                 lateDays,
                 earlyLeaveDays,
+                absentDaysCount,
                 totalOvertimeHours: (totalOvertimeMinutes / 60).toFixed(1)
             };
         });
@@ -601,21 +609,38 @@ export class AttendanceService {
         let workCount: number | undefined = undefined;
 
         // 🚀 CALCULATION ENGINE
-        if (configData && checkInDate && checkOutDate) {
-            const engineResult = this.calculator.evaluateAttendance(configData, checkInDate, checkOutDate);
-            checkInStatus = engineResult.checkInStatus;
-            checkOutStatus = engineResult.checkOutStatus;
-            lateMinutes = engineResult.lateMinutes;
-            earlyLeaveMinutes = engineResult.earlyLeaveMinutes;
-            overtimeMinutes = engineResult.overtimeMinutes;
-            totalWorkMinutes = engineResult.totalWorkMinutes;
-            dailyStatus = engineResult.dailyStatus;
-            workCount = engineResult.workCount;
-        } else if (configData && checkInDate) {
-            const engineResult = this.calculator.evaluateCheckIn(configData, checkInDate);
-            checkInStatus = engineResult.checkInStatus;
-            lateMinutes = engineResult.lateMinutes;
-            dailyStatus = checkInStatus === 'ON_TIME' ? 'FULL_DAY' : 'LATE_DAY';
+        if (configData) {
+            if (checkInDate && checkOutDate) {
+                const engineResult = this.calculator.evaluateAttendance(configData, checkInDate, checkOutDate);
+                checkInStatus = engineResult.checkInStatus;
+                checkOutStatus = engineResult.checkOutStatus;
+                lateMinutes = engineResult.lateMinutes;
+                earlyLeaveMinutes = engineResult.earlyLeaveMinutes;
+                overtimeMinutes = engineResult.overtimeMinutes;
+                totalWorkMinutes = engineResult.totalWorkMinutes;
+                dailyStatus = engineResult.dailyStatus;
+                workCount = engineResult.workCount;
+            } else if (checkInDate) {
+                const engineResult = this.calculator.evaluateCheckIn(configData, checkInDate);
+                checkInStatus = engineResult.checkInStatus;
+                lateMinutes = engineResult.lateMinutes;
+                // Nếu chỉ có check-in, mặc định là chưa đủ công
+                checkOutStatus = 'MISSING_OUT';
+                dailyStatus = 'INCOMPLETE';
+                workCount = 0;
+            } else if (checkOutDate) {
+                // Trường hợp chỉ có check-out
+                checkInStatus = 'MISSING_IN';
+                checkOutStatus = 'ON_TIME';
+                dailyStatus = 'INCOMPLETE';
+                workCount = 0;
+            } else {
+                // Xóa trắng cả 2
+                checkInStatus = 'ABSENT_UNAPPROVED';
+                checkOutStatus = 'ABSENT_UNAPPROVED';
+                dailyStatus = 'ABSENT_UNAPPROVED';
+                workCount = 0;
+            }
         } else {
             // Legacy/Fallback logic (WorkShift)
             let shift = attendance?.shift;
@@ -628,6 +653,8 @@ export class AttendanceService {
             if (shift) {
                 const [startH, startM] = shift.startTime.split(':').map(Number);
                 const shiftStartTime = new Date(targetDate.getTime() + (startH - 7) * 3600000 + startM * 60000);
+                const [endH, endM] = shift.endTime.split(':').map(Number);
+                const shiftEndTime = new Date(targetDate.getTime() + (endH - 7) * 3600000 + endM * 60000);
 
                 if (checkInDate) {
                     const diffIn = Math.floor((checkInDate.getTime() - shiftStartTime.getTime()) / 60000);
@@ -638,13 +665,12 @@ export class AttendanceService {
                         checkInStatus = 'LATE';
                         lateMinutes = diffIn;
                     }
+                } else {
+                    checkInStatus = 'MISSING_IN';
                 }
 
                 if (checkOutDate) {
-                    const [endH, endM] = shift.endTime.split(':').map(Number);
-                    const shiftEndTime = new Date(targetDate.getTime() + (endH - 7) * 3600000 + endM * 60000);
                     const diffOut = Math.floor((checkOutDate.getTime() - shiftEndTime.getTime()) / 60000);
-                    
                     if (diffOut < -shift.earlyLeaveThreshold) {
                         checkOutStatus = 'EARLY_LEAVE';
                         earlyLeaveMinutes = Math.abs(diffOut);
@@ -652,13 +678,25 @@ export class AttendanceService {
                         checkOutStatus = 'OVERTIME';
                         overtimeMinutes = diffOut;
                     }
+                } else {
+                    checkOutStatus = 'MISSING_OUT';
                 }
             }
 
             if (checkInDate && checkOutDate) {
                 totalWorkMinutes = Math.floor((checkOutDate.getTime() - checkInDate.getTime()) / 60000);
+                // Với Legacy, nếu trễ hoặc sớm quá nhiều thì coi là INCOMPLETE
+                const isTooLate = lateMinutes > 30;
+                const isTooEarly = earlyLeaveMinutes > 30;
+                dailyStatus = (isTooLate || isTooEarly) ? 'INCOMPLETE' : 'FULL_DAY';
+                workCount = (isTooLate || isTooEarly) ? 0.5 : 1.0;
+            } else if (!checkInDate && !checkOutDate) {
+                dailyStatus = 'ABSENT_UNAPPROVED';
+                workCount = 0;
+            } else {
+                dailyStatus = 'INCOMPLETE';
+                workCount = 0;
             }
-            dailyStatus = (checkInStatus.startsWith('LATE') || checkOutStatus === 'EARLY_LEAVE') ? 'INCOMPLETE' : 'FULL_DAY';
         }
 
         const auditData = {
