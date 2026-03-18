@@ -137,10 +137,13 @@ export class AttendanceCalculatorService {
     };
   }
 
-  evaluateCheckIn(
+    evaluateCheckIn(
     config: AttendanceConfig,
     checkInTimeUTC: Date,
   ): { checkInStatus: string; lateMinutes: number } {
+    if (!checkInTimeUTC || isNaN(checkInTimeUTC.getTime())) {
+      return { checkInStatus: 'ON_TIME', lateMinutes: 0 };
+    }
     if (config.theme === 'RAW_TRACKING' || config.attendance_calculation?.ignore_late) {
       return { checkInStatus: 'ON_TIME', lateMinutes: 0 };
     }
@@ -197,6 +200,18 @@ export class AttendanceCalculatorService {
     checkInTimeUTC: Date,
     checkOutTimeUTC: Date
   ): AttendanceEvaluationResult {
+    if (!checkInTimeUTC || isNaN(checkInTimeUTC.getTime()) || !checkOutTimeUTC || isNaN(checkOutTimeUTC.getTime())) {
+      return {
+        totalWorkMinutes: 0,
+        overtimeMinutes: 0,
+        lateMinutes: 0,
+        earlyLeaveMinutes: 0,
+        checkInStatus: 'ON_TIME',
+        checkOutStatus: 'ON_TIME',
+        dailyStatus: 'INVALID',
+        workCount: 0,
+      };
+    }
     const inVN = new Date(checkInTimeUTC.getTime() + 7 * 3600000);
     const outVN = new Date(checkOutTimeUTC.getTime() + 7 * 3600000);
     const schedule = this.getEffectiveSchedule(config, inVN);

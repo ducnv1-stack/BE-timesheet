@@ -572,213 +572,249 @@ export class AttendanceService {
         note?: string;
         changedById: string; // ID của người thực hiện chỉnh sửa
     }) {
-        // 1. Xác định targetDate (00:00:00 UTC của ngày local VN)
-        const dateVN = new Date(new Date(data.date).getTime() + 7 * 3600000);
-        const targetDate = new Date(Date.UTC(dateVN.getUTCFullYear(), dateVN.getUTCMonth(), dateVN.getUTCDate()));
-        const vnDayOfWeek = dateVN.getUTCDay();
-
-        const employee = await this.prisma.employee.findUnique({
-            where: { id: data.employeeId },
-            include: { branch: true }
-        });
-
-        if (!employee) throw new NotFoundException('Không tìm thấy nhân viên');
-
-        // Fetch Policy
-        const policyInfo = await this.getPolicyForDayExplicit(data.employeeId, vnDayOfWeek);
-        const policy = policyInfo?.policy;
-        const policyDay = policyInfo?.day;
-        const configData = (policy as any)?.configData as AttendanceConfig | null;
-
-        let attendance = await this.prisma.attendance.findUnique({
-            where: { employeeId_date: { employeeId: data.employeeId, date: targetDate } },
-            include: { shift: true }
-        });
-
-        // Parse Inputs
-        const checkInDate = data.checkInTime ? new Date(data.checkInTime + ':00+07:00') : null;
-        const checkOutDate = data.checkOutTime ? new Date(data.checkOutTime + ':00+07:00') : null;
-
-        let lateMinutes = 0;
-        let earlyLeaveMinutes = 0;
-        let overtimeMinutes = 0;
-        let checkInStatus = 'ON_TIME';
-        let checkOutStatus = 'ON_TIME';
-        let totalWorkMinutes = 0;
-        let dailyStatus = 'FULL_DAY';
-        let workCount: number | undefined = undefined;
-
-        // 🚀 CALCULATION ENGINE
-        if (configData) {
-            if (checkInDate && checkOutDate) {
-                const engineResult = this.calculator.evaluateAttendance(configData, checkInDate, checkOutDate);
-                checkInStatus = engineResult.checkInStatus;
-                checkOutStatus = engineResult.checkOutStatus;
-                lateMinutes = engineResult.lateMinutes;
-                earlyLeaveMinutes = engineResult.earlyLeaveMinutes;
-                overtimeMinutes = engineResult.overtimeMinutes;
-                totalWorkMinutes = engineResult.totalWorkMinutes;
-                dailyStatus = engineResult.dailyStatus;
-                workCount = engineResult.workCount;
-            } else if (checkInDate) {
-                const engineResult = this.calculator.evaluateCheckIn(configData, checkInDate);
-                checkInStatus = engineResult.checkInStatus;
-                lateMinutes = engineResult.lateMinutes;
-                // Nếu chỉ có check-in, mặc định là chưa đủ công
-                checkOutStatus = 'MISSING_OUT';
-                dailyStatus = 'INCOMPLETE';
-                workCount = 0;
-            } else if (checkOutDate) {
-                // Trường hợp chỉ có check-out
-                checkInStatus = 'MISSING_IN';
-                checkOutStatus = 'ON_TIME';
-                dailyStatus = 'INCOMPLETE';
-                workCount = 0;
-            } else {
-                // Xóa trắng cả 2
-                checkInStatus = 'ABSENT_UNAPPROVED';
-                checkOutStatus = 'ABSENT_UNAPPROVED';
-                dailyStatus = 'ABSENT_UNAPPROVED';
-                workCount = 0;
+        console.log('[AdjustAttendance] Input data:', JSON.stringify(data, null, 2));
+        try {
+            // 1. Xác định targetDate (00:00:00 UTC của ngày local VN)
+            const dateObj = new Date(data.date);
+            if (isNaN(dateObj.getTime())) {
+                throw new BadRequestException('Ngày hiệu chỉnh không hợp lệ');
             }
-        } else {
-            // Legacy/Fallback logic (WorkShift)
-            let shift = attendance?.shift;
-            if (!shift) {
-                shift = await this.prisma.workShift.findFirst({
-                    where: { branchId: employee.branchId, isActive: true },
-                });
-            }
+            const dateVN = new Date(dateObj.getTime() + 7 * 3600000);
+            const targetDate = new Date(Date.UTC(dateVN.getUTCFullYear(), dateVN.getUTCMonth(), dateVN.getUTCDate()));
+            const vnDayOfWeek = dateVN.getUTCDay();
 
-            if (shift) {
-                const [startH, startM] = shift.startTime.split(':').map(Number);
-                const shiftStartTime = new Date(targetDate.getTime() + (startH - 7) * 3600000 + startM * 60000);
-                const [endH, endM] = shift.endTime.split(':').map(Number);
-                const shiftEndTime = new Date(targetDate.getTime() + (endH - 7) * 3600000 + endM * 60000);
+            console.log(`[AdjustAttendance] TargetDate: ${targetDate.toISOString()}, DayOfWeek: ${vnDayOfWeek}`);
 
-                if (checkInDate) {
-                    const diffIn = Math.floor((checkInDate.getTime() - shiftStartTime.getTime()) / 60000);
-                    if (diffIn > shift.lateSeriousThreshold) {
-                        checkInStatus = 'LATE_SERIOUS';
-                        lateMinutes = diffIn;
-                    } else if (diffIn > shift.lateThreshold) {
-                        checkInStatus = 'LATE';
-                        lateMinutes = diffIn;
-                    }
-                } else {
-                    checkInStatus = 'MISSING_IN';
-                }
-
-                if (checkOutDate) {
-                    const diffOut = Math.floor((checkOutDate.getTime() - shiftEndTime.getTime()) / 60000);
-                    if (diffOut < -shift.earlyLeaveThreshold) {
-                        checkOutStatus = 'EARLY_LEAVE';
-                        earlyLeaveMinutes = Math.abs(diffOut);
-                    } else if (diffOut >= 30) {
-                        checkOutStatus = 'OVERTIME';
-                        overtimeMinutes = diffOut;
-                    }
-                } else {
-                    checkOutStatus = 'MISSING_OUT';
-                }
-            }
-
-            if (checkInDate && checkOutDate) {
-                totalWorkMinutes = Math.floor((checkOutDate.getTime() - checkInDate.getTime()) / 60000);
-                // Với Legacy, nếu trễ hoặc sớm quá nhiều thì coi là INCOMPLETE
-                const isTooLate = lateMinutes > 30;
-                const isTooEarly = earlyLeaveMinutes > 30;
-                dailyStatus = (isTooLate || isTooEarly) ? 'INCOMPLETE' : 'FULL_DAY';
-                workCount = (isTooLate || isTooEarly) ? 0.5 : 1.0;
-            } else if (!checkInDate && !checkOutDate) {
-                dailyStatus = 'ABSENT_UNAPPROVED';
-                workCount = 0;
-            } else {
-                dailyStatus = 'INCOMPLETE';
-                workCount = 0;
-            }
-        }
-
-        const auditData = {
-            old: attendance ? {
-                checkInTime: attendance.checkInTime,
-                checkInStatus: attendance.checkInStatus,
-                checkOutTime: attendance.checkOutTime,
-                checkOutStatus: attendance.checkOutStatus,
-                lateMinutes: attendance.lateMinutes,
-                earlyLeaveMinutes: attendance.earlyLeaveMinutes,
-                dailyStatus: attendance.dailyStatus,
-                note: attendance.note
-            } : null,
-            new: {
-                checkInTime: checkInDate,
-                checkInStatus,
-                checkOutTime: checkOutDate,
-                checkOutStatus,
-                lateMinutes,
-                earlyLeaveMinutes,
-                dailyStatus,
-                note: data.note
-            }
-        };
-
-        const result = await this.prisma.$transaction(async (tx) => {
-            let updatedAttendance;
-            const commonData = {
-                checkInTime: checkInDate,
-                checkInStatus,
-                checkInMethod: 'MANUAL',
-                lateMinutes,
-                checkOutTime: checkOutDate,
-                checkOutStatus,
-                checkOutMethod: 'MANUAL',
-                earlyLeaveMinutes,
-                overtimeMinutes,
-                totalWorkMinutes,
-                dailyStatus,
-                workCount,
-                isManualOverride: true,
-                approvedById: data.changedById,
-                attendancePolicyDayId: policyDay?.id,
-            };
-
-            if (!attendance) {
-                updatedAttendance = await tx.attendance.create({
-                    data: {
-                        employeeId: data.employeeId,
-                        branchId: employee.branchId,
-                        date: targetDate,
-                        ...commonData,
-                        note: `[Đã hiệu chỉnh] ${data.note || ''}`,
-                    }
-                });
-            } else {
-                updatedAttendance = await tx.attendance.update({
-                    where: { id: attendance.id },
-                    data: {
-                        ...commonData,
-                        note: `${attendance.note || ''} | [Đã hiệu chỉnh] ${data.note || ''}`,
-                    }
-                });
-            }
-
-            // Ghi log chỉnh sửa
-            await (tx as any).attendanceAuditLog.create({
-                data: {
-                    attendanceId: updatedAttendance.id,
-                    changedBy: data.changedById,
-                    action: 'MANUAL_ADJUST',
-                    oldData: auditData.old as any,
-                    newData: auditData.new as any,
-                    reason: data.note || 'Hiệu chỉnh chấm công thủ công',
-                }
+            const employee = await this.prisma.employee.findUnique({
+                where: { id: data.employeeId },
+                include: { branch: true }
             });
 
-            return updatedAttendance;
-        });
+            if (!employee) throw new NotFoundException('Không tìm thấy nhân viên');
 
-        return result;
+            // Fetch Policy
+            const policyInfo = await this.getPolicyForDayExplicit(data.employeeId, vnDayOfWeek);
+            const policy = policyInfo?.policy;
+            const policyDay = policyInfo?.day;
+            const configData = (policy as any)?.configData as AttendanceConfig | null;
+
+            let attendance = await this.prisma.attendance.findUnique({
+                where: { employeeId_date: { employeeId: data.employeeId, date: targetDate } },
+                include: { shift: true }
+            });
+
+            // Parse Inputs
+            const checkInDate = data.checkInTime ? new Date(data.checkInTime + ':00+07:00') : null;
+            const checkOutDate = data.checkOutTime ? new Date(data.checkOutTime + ':00+07:00') : null;
+
+            if (checkInDate && isNaN(checkInDate.getTime())) {
+                throw new BadRequestException('Giờ vào không hợp lệ');
+            }
+            if (checkOutDate && isNaN(checkOutDate.getTime())) {
+                throw new BadRequestException('Giờ ra không hợp lệ');
+            }
+
+            console.log(`[AdjustAttendance] Parsed checkIn: ${checkInDate?.toISOString()}, checkOut: ${checkOutDate?.toISOString()}`);
+
+            let lateMinutes = 0;
+            let earlyLeaveMinutes = 0;
+            let overtimeMinutes = 0;
+            let checkInStatus = 'ON_TIME';
+            let checkOutStatus = 'ON_TIME';
+            let totalWorkMinutes = 0;
+            let dailyStatus = 'FULL_DAY';
+            let workCount: number | undefined = undefined;
+
+            // 🚀 CALCULATION ENGINE
+            if (configData) {
+                console.log('[AdjustAttendance] Using configData Engine');
+                if (checkInDate && checkOutDate) {
+                    const engineResult = this.calculator.evaluateAttendance(configData, checkInDate, checkOutDate);
+                    checkInStatus = engineResult.checkInStatus;
+                    checkOutStatus = engineResult.checkOutStatus;
+                    lateMinutes = engineResult.lateMinutes;
+                    earlyLeaveMinutes = engineResult.earlyLeaveMinutes;
+                    overtimeMinutes = engineResult.overtimeMinutes;
+                    totalWorkMinutes = engineResult.totalWorkMinutes;
+                    dailyStatus = engineResult.dailyStatus;
+                    workCount = engineResult.workCount;
+                } else if (checkInDate) {
+                    const engineResult = this.calculator.evaluateCheckIn(configData, checkInDate);
+                    checkInStatus = engineResult.checkInStatus;
+                    lateMinutes = engineResult.lateMinutes;
+                    checkOutStatus = 'MISSING_OUT';
+                    dailyStatus = 'INCOMPLETE';
+                    workCount = 0;
+                } else if (checkOutDate) {
+                    checkInStatus = 'MISSING_IN';
+                    checkOutStatus = 'ON_TIME';
+                    dailyStatus = 'INCOMPLETE';
+                    workCount = 0;
+                } else {
+                    checkInStatus = 'ABSENT_UNAPPROVED';
+                    checkOutStatus = 'ABSENT_UNAPPROVED';
+                    dailyStatus = 'ABSENT_UNAPPROVED';
+                    workCount = 0;
+                }
+            } else {
+                console.log('[AdjustAttendance] Falling back to Legacy/WorkShift');
+                let shift = attendance?.shift;
+                if (!shift) {
+                    shift = await this.prisma.workShift.findFirst({
+                        where: { branchId: employee.branchId, isActive: true },
+                    });
+                }
+
+                if (shift) {
+                    const [startH, startM] = shift.startTime.split(':').map(Number);
+                    const shiftStartTime = new Date(targetDate.getTime() + (startH - 7) * 3600000 + startM * 60000);
+                    const [endH, endM] = shift.endTime.split(':').map(Number);
+                    const shiftEndTime = new Date(targetDate.getTime() + (endH - 7) * 3600000 + endM * 60000);
+
+                    if (checkInDate) {
+                        const diffIn = Math.floor((checkInDate.getTime() - shiftStartTime.getTime()) / 60000);
+                        if (diffIn > shift.lateSeriousThreshold) {
+                            checkInStatus = 'LATE_SERIOUS';
+                            lateMinutes = diffIn;
+                        } else if (diffIn > shift.lateThreshold) {
+                            checkInStatus = 'LATE';
+                            lateMinutes = diffIn;
+                        }
+                    } else {
+                        checkInStatus = 'MISSING_IN';
+                    }
+
+                    if (checkOutDate) {
+                        const diffOut = Math.floor((checkOutDate.getTime() - shiftEndTime.getTime()) / 60000);
+                        if (diffOut < -shift.earlyLeaveThreshold) {
+                            checkOutStatus = 'EARLY_LEAVE';
+                            earlyLeaveMinutes = Math.abs(diffOut);
+                        } else if (diffOut >= 30) {
+                            checkOutStatus = 'OVERTIME';
+                            overtimeMinutes = diffOut;
+                        }
+                    } else {
+                        checkOutStatus = 'MISSING_OUT';
+                    }
+                }
+
+                if (checkInDate && checkOutDate) {
+                    totalWorkMinutes = Math.floor((checkOutDate.getTime() - checkInDate.getTime()) / 60000);
+                    const isTooLate = lateMinutes > 30;
+                    const isTooEarly = earlyLeaveMinutes > 30;
+                    dailyStatus = (isTooLate || isTooEarly) ? 'INCOMPLETE' : 'FULL_DAY';
+                    workCount = (isTooLate || isTooEarly) ? 0.5 : 1.0;
+                } else if (!checkInDate && !checkOutDate) {
+                    dailyStatus = 'ABSENT_UNAPPROVED';
+                    workCount = 0;
+                } else {
+                    dailyStatus = 'INCOMPLETE';
+                    workCount = 0;
+                }
+            }
+
+            console.log(`[AdjustAttendance] Calculated: ${dailyStatus}, workCount: ${workCount}, late: ${lateMinutes}, early: ${earlyLeaveMinutes}, OT: ${overtimeMinutes}`);
+
+            const auditData = {
+                old: attendance ? {
+                    checkInTime: attendance.checkInTime,
+                    checkInStatus: attendance.checkInStatus,
+                    checkOutTime: attendance.checkOutTime,
+                    checkOutStatus: attendance.checkOutStatus,
+                    lateMinutes: attendance.lateMinutes,
+                    earlyLeaveMinutes: attendance.earlyLeaveMinutes,
+                    dailyStatus: attendance.dailyStatus,
+                    note: attendance.note
+                } : null,
+                new: {
+                    checkInTime: checkInDate,
+                    checkInStatus,
+                    checkOutTime: checkOutDate,
+                    checkOutStatus,
+                    lateMinutes,
+                    earlyLeaveMinutes,
+                    dailyStatus,
+                    note: data.note
+                }
+            };
+
+            const result = await this.prisma.$transaction(async (tx) => {
+                let updatedAttendance;
+                const commonData = {
+                    checkInTime: checkInDate,
+                    checkInStatus,
+                    checkInMethod: 'MANUAL',
+                    lateMinutes: isNaN(lateMinutes) ? 0 : lateMinutes,
+                    checkOutTime: checkOutDate,
+                    checkOutStatus,
+                    checkOutMethod: 'MANUAL',
+                    earlyLeaveMinutes: isNaN(earlyLeaveMinutes) ? 0 : earlyLeaveMinutes,
+                    overtimeMinutes: isNaN(overtimeMinutes) ? 0 : overtimeMinutes,
+                    totalWorkMinutes: isNaN(totalWorkMinutes) ? 0 : totalWorkMinutes,
+                    dailyStatus,
+                    workCount: (workCount === undefined || isNaN(workCount)) ? 1.0 : workCount,
+                    isManualOverride: true,
+                    approvedById: data.changedById,
+                    attendancePolicyDayId: policyDay?.id,
+                };
+
+                console.log('[AdjustAttendance] Updating/Creating record with commonData:', JSON.stringify(commonData, null, 2));
+
+                if (!attendance) {
+                    updatedAttendance = await tx.attendance.create({
+                        data: {
+                            employeeId: data.employeeId,
+                            branchId: employee.branchId,
+                            date: targetDate,
+                            ...commonData,
+                            note: `[Đã hiệu chỉnh] ${data.note || ''}`,
+                        }
+                    });
+                } else {
+                    updatedAttendance = await tx.attendance.update({
+                        where: { id: attendance.id },
+                        data: {
+                            ...commonData,
+                            note: `${attendance.note || ''} | [Đã hiệu chỉnh] ${data.note || ''}`,
+                        }
+                    });
+                }
+
+                console.log('[AdjustAttendance] Record updated, id:', updatedAttendance.id);
+
+                // Ghi log chỉnh sửa
+                const auditLogModel = (tx as any).attendanceAuditLog;
+                if (!auditLogModel) {
+                     console.error('[AdjustAttendance] CRITICAL ERROR: tx.attendanceAuditLog NOT FOUND');
+                     throw new Error('Hệ thống chưa đồng bộ Prisma client, vui lòng liên hệ kỹ thuật.');
+                }
+
+                await auditLogModel.create({
+                    data: {
+                        attendanceId: updatedAttendance.id,
+                        changedBy: data.changedById,
+                        action: 'MANUAL_ADJUST',
+                        oldData: auditData.old as any,
+                        newData: auditData.new as any,
+                        reason: data.note || 'Hiệu chỉnh chấm công thủ công',
+                    }
+                });
+
+                console.log('[AdjustAttendance] Audit log created successfully');
+                return updatedAttendance;
+            });
+
+            return result;
+        } catch (error) {
+            console.error('[AdjustAttendance] Error:', error);
+            // Re-throw if it's already a Nest exception, otherwise wrap as BadRequest
+            if (error instanceof BadRequestException || error instanceof NotFoundException) {
+                throw error;
+            }
+            throw new BadRequestException('Lỗi hệ thống khi hiệu chỉnh công: ' + error.message);
+        }
     }
+
 
     async getAuditLogs(attendanceId: string) {
         return (this.prisma as any).attendanceAuditLog.findMany({
