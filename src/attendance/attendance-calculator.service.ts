@@ -347,7 +347,7 @@ export class AttendanceCalculatorService {
           checkOutStatus = 'EARLY_LEAVE';
         }
       } else if (workedS1) {
-        workCount = schedule.shift1_work_count || 0.5;
+        workCount = Number(schedule.shift1_work_count || 0.5);
         detectedShift = 'HALF_DAY_MORNING';
         // Late tính theo start_time
         const diffIn = Math.floor((inVN.getTime() - expectedInVN.getTime()) / 60000);
@@ -364,7 +364,7 @@ export class AttendanceCalculatorService {
           checkOutStatus = 'EARLY_LEAVE';
         }
       } else if (workedS2) {
-        workCount = schedule.shift2_work_count || 0.5;
+        workCount = Number(schedule.shift2_work_count || 0.5);
         detectedShift = 'HALF_DAY_AFTERNOON';
         // Late tính theo shift2_start_time
         const s2InVN = new Date(inVN);

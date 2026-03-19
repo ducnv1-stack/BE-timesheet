@@ -403,7 +403,7 @@ export class AttendanceService {
         const startDate = new Date(Date.UTC(year, month - 1, 1));
         const endDate = new Date(Date.UTC(year, month, 0));
 
-        return this.prisma.attendance.findMany({
+        const attendances = await this.prisma.attendance.findMany({
             where: {
                 employeeId,
                 date: {
@@ -420,6 +420,56 @@ export class AttendanceService {
                 }
             },
         });
+
+        // Xác định ngày cuối cùng cần hiển thị (nếu là tháng hiện tại thì chỉ hiện đến hôm nay)
+        const now = new Date();
+        const nowUTC = new Date(now.getTime() + 7 * 3600000); // Giả sử giờ VN
+        const isCurrentMonth = now.getUTCFullYear() === year && (now.getUTCMonth() + 1) === month;
+        const isFutureMonth = (year > now.getUTCFullYear()) || (year === now.getUTCFullYear() && month > (now.getUTCMonth() + 1));
+        
+        const lastDayOfMonth = endDate.getUTCDate();
+        let lastDayToShow = lastDayOfMonth;
+        
+        if (isCurrentMonth) {
+            lastDayToShow = now.getDate(); // Lấy ngày hiện tại
+        } else if (isFutureMonth) {
+            lastDayToShow = 0; // Không hiện ngày nào cho tháng tương lai
+        }
+
+        const fullTimesheet = [];
+        
+        for (let day = 1; day <= lastDayToShow; day++) {
+            const currentDate = new Date(Date.UTC(year, month - 1, day));
+            // Tìm bản ghi chấm công cho ngày này
+            const existingRecord = attendances.find(a => {
+                const d = new Date(a.date);
+                return d.getUTCDate() === day;
+            });
+
+            if (existingRecord) {
+                fullTimesheet.push(existingRecord);
+            } else {
+                // Tạo bản ghi giả nếu chưa có chấm công
+                fullTimesheet.push({
+                    id: `temp-${day}`,
+                    date: currentDate,
+                    employeeId,
+                    checkInTime: null,
+                    checkOutTime: null,
+                    totalWorkMinutes: 0,
+                    lateMinutes: 0,
+                    earlyLeaveMinutes: 0,
+                    overtimeMinutes: 0,
+                    dailyStatus: 'ABSENT_UNAPPROVED',
+                    workCount: 0,
+                    checkInStatus: null,
+                    checkOutStatus: null,
+                    exceptionRequests: []
+                });
+            }
+        }
+
+        return fullTimesheet;
     }
 
     // Lấy bảng tổng hợp công
@@ -493,6 +543,71 @@ export class AttendanceService {
         });
 
         return summary;
+    }
+
+    // Lấy bảng công ngày (cho tab Công hôm nay)
+    async getDailyAttendance(date: Date, branchId?: string, search?: string, position?: string) {
+        // Chuẩn hóa về 00:00:00 UTC của ngày đó
+        const targetDate = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+
+        const employees = await this.prisma.employee.findMany({
+            where: {
+                status: { not: 'Nghỉ việc' },
+                ...(branchId ? { branchId } : {}),
+                ...(position ? { position } : {}),
+                ...(search ? {
+                    OR: [
+                        { fullName: { contains: search, mode: 'insensitive' } },
+                        { phone: { contains: search, mode: 'insensitive' } }
+                    ]
+                } : {})
+            },
+            include: {
+                branch: { select: { name: true } },
+                pos: { select: { name: true } }
+            },
+            orderBy: { fullName: 'asc' }
+        });
+
+        const attendanceRecords = await this.prisma.attendance.findMany({
+            where: {
+                date: targetDate,
+                employeeId: { in: employees.map(e => e.id) }
+            },
+            include: {
+                shift: true,
+                exceptionRequests: {
+                    where: { status: 'PENDING' },
+                    select: { id: true, type: true, status: true }
+                }
+            }
+        });
+
+        return employees.map(emp => {
+            const record = attendanceRecords.find(a => a.employeeId === emp.id);
+            if (record) {
+                return { ...record, employee: emp };
+            }
+
+            // Nếu chưa có, trả về placeholder
+            return {
+                id: `today-${emp.id}`,
+                date: targetDate,
+                employeeId: emp.id,
+                employee: emp,
+                checkInTime: null,
+                checkOutTime: null,
+                totalWorkMinutes: 0,
+                lateMinutes: 0,
+                earlyLeaveMinutes: 0,
+                overtimeMinutes: 0,
+                dailyStatus: 'ABSENT_UNAPPROVED',
+                workCount: 0,
+                checkInStatus: null,
+                checkOutStatus: null,
+                exceptionRequests: []
+            };
+        });
     }
 
     // ========== WORK SHIFT CRUD ==========

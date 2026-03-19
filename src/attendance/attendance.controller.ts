@@ -103,4 +103,20 @@ export class AttendanceController {
             search
         );
     }
+
+    @Get('daily')
+    async getDaily(
+        @Query('date') date?: string,
+        @Query('branchId') branchId?: string,
+        @Query('search') search?: string,
+        @Query('position') position?: string
+    ) {
+        const targetDate = date ? new Date(date) : new Date();
+        return this.attendanceService.getDailyAttendance(
+            targetDate,
+            branchId,
+            search,
+            position
+        );
+    }
 }
