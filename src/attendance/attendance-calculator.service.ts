@@ -105,9 +105,9 @@ export class AttendanceCalculatorService {
         has_shifts: dailyRule.has_shifts ?? false,
         shift1_end_time: dailyRule.shift1_end_time,
         shift2_start_time: dailyRule.shift2_start_time,
-        shift1_work_count: dailyRule.shift1_work_count ?? 0.5,
-        shift2_work_count: dailyRule.shift2_work_count ?? 0.5,
-        work_count: dailyRule.work_count ?? 1.0,
+        shift1_work_count: Number(dailyRule.shift1_work_count ?? 0.5),
+        shift2_work_count: Number(dailyRule.shift2_work_count ?? 0.5),
+        work_count: Number(dailyRule.work_count ?? 1.0),
       };
     }
     
@@ -333,7 +333,7 @@ export class AttendanceCalculatorService {
       const workedS2 = (inVN.getTime() <= expectedOutVN.getTime() - (threshold * 60000)) && (outVN.getTime() >= s2StartVN.getTime() + (threshold * 60000));
 
       if (workedS1 && workedS2) {
-        workCount = (schedule.shift1_work_count || 0.5) + (schedule.shift2_work_count || 0.5);
+        workCount = Number(schedule.shift1_work_count || 0.5) + Number(schedule.shift2_work_count || 0.5);
         detectedShift = 'FULL_DAY';
         // Late tính theo start_time, Early tính theo end_time
         const diffIn = Math.floor((inVN.getTime() - expectedInVN.getTime()) / 60000);
