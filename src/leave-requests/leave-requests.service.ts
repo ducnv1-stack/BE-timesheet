@@ -82,13 +82,14 @@ export class LeaveRequestsService {
     });
   }
 
-  async getWeeklySummary(startDate: string, endDate: string, branchId?: string) {
+  async getWeeklySummary(startDate: string, endDate: string, branchId?: string, employeeId?: string) {
     const start = new Date(startDate);
     const end = new Date(endDate);
 
     return this.prisma.leaveRequest.findMany({
       where: {
         status: 'APPROVED',
+        ...(employeeId ? { employeeId } : {}),
         AND: [
           {
             OR: [

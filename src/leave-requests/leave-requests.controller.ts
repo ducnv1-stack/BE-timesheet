@@ -31,8 +31,9 @@ export class LeaveRequestsController {
     @Query('startDate') startDate: string,
     @Query('endDate') endDate: string,
     @Query('branchId') branchId?: string,
+    @Query('employeeId') employeeId?: string,
   ) {
-    return this.service.getWeeklySummary(startDate, endDate, branchId);
+    return this.service.getWeeklySummary(startDate, endDate, branchId, employeeId);
   }
 
   @Get('my')
