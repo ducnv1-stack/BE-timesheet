@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Delete, Body, Query, Param } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Query, Param, Res } from '@nestjs/common';
 import { AttendanceService } from './attendance.service';
 import { CheckInDto, CheckOutDto } from './dto/attendance.dto';
 
@@ -49,6 +49,29 @@ export class AttendanceController {
             search,
             position
         );
+    }
+
+    @Get('export-timesheet')
+    async exportTimesheet(
+        @Query('month') month: string,
+        @Query('year') year: string,
+        @Res() res: any,
+        @Query('branchId') branchId?: string,
+        @Query('search') search?: string,
+        @Query('position') position?: string
+    ) {
+        const buffer = await this.attendanceService.exportTimesheet(
+            parseInt(month),
+            parseInt(year),
+            branchId,
+            search,
+            position
+        );
+        res.set({
+            'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'Content-Disposition': `attachment; filename="Bang_cong_Thang_${month}_${year}.xlsx"`,
+        });
+        res.send(buffer);
     }
 
     // ========== WORK SHIFT CRUD ==========

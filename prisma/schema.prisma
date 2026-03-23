@@ -157,6 +157,7 @@ model User {
   attendanceAuditLogs  AttendanceAuditLog[]        @relation("AuditLogUser")
   exceptionApprovals   AttendanceExceptionRequest[] @relation("ExceptionApprover")
   approvedAttendances  Attendance[]                 @relation("AttendanceApprover")
+  leaveApprovals       LeaveRequest[]               @relation("LeaveApprover")
 
   @@map("users")
 }
@@ -710,6 +711,12 @@ model LeaveRequest {
   leaveType    String    @map("leave_type")
   startDate    DateTime  @map("start_date") @db.Date
   endDate      DateTime  @map("end_date") @db.Date
+  
+  // 🆕 Support for recurring and half-day
+  isRecurring   Boolean   @default(false) @map("is_recurring")
+  recurringDays Int[]     @default([]) @map("recurring_days") // [1, 2, 5] -> Mon, Tue, Fri
+  leaveSession  String    @default("ALL_DAY") @map("leave_session") // ALL_DAY, MORNING, AFTERNOON
+  
   reason       String?   @db.Text
   status       String    @default("PENDING")
   approvedById String?   @map("approved_by_id") @db.Uuid
@@ -718,6 +725,7 @@ model LeaveRequest {
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
   employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  approver User?    @relation("LeaveApprover", fields: [approvedById], references: [id])
 
   @@map("leave_requests")
 }

@@ -71,6 +71,38 @@ export class AttendanceService {
         return null;
     }
 
+    // Helper: Kiểm tra xem nhân viên có đơn nghỉ phép (Đột xuất hoặc Cố định) được duyệt cho ngày này không
+    private async getApprovedLeave(employeeId: string, date: Date) {
+        // Lấy thứ trong tuần (0: CN, 1: T2, ...)
+        const dayOfWeek = date.getUTCDay();
+
+        // Tìm đơn nghỉ Đột xuất bao phủ ngày này
+        const oneOffLeave = await this.prisma.leaveRequest.findFirst({
+            where: {
+                employeeId,
+                status: 'APPROVED',
+                isRecurring: false,
+                startDate: { lte: date },
+                endDate: { gte: date },
+            }
+        });
+
+        if (oneOffLeave) return oneOffLeave;
+
+        // Tìm đơn nghỉ Cố định có hiệu lực (ngày bắt đầu <= ngày hiện tại) và có thứ lặp lại khớp
+        const recurringLeave = await this.prisma.leaveRequest.findFirst({
+            where: {
+                employeeId,
+                status: 'APPROVED',
+                isRecurring: true,
+                startDate: { lte: date },
+                recurringDays: { has: dayOfWeek }
+            }
+        });
+
+        return recurringLeave;
+    }
+
     // Lấy trạng thái chấm công của nhân viên hôm nay
     async getTodayStatus(employeeId: string) {
         // Lấy ngày hôm nay theo giờ VN
@@ -446,9 +478,22 @@ export class AttendanceService {
                 return d.getUTCDate() === day;
             });
 
+            // Kiểm tra xem có đơn nghỉ phép được duyệt không
+            const approvedLeave = await this.getApprovedLeave(employeeId, currentDate);
+
             if (existingRecord) {
+                // Nếu đã có record điểm danh nhưng là vắng mặt, hoặc thiếu giờ (mà có đơn nghỉ)
+                // Cập nhật thông tin nghỉ phép vào record (đặc biệt cho đơn nghỉ cố định)
+                if ((!existingRecord.checkInTime || existingRecord.dailyStatus === 'ABSENT_UNAPPROVED') && approvedLeave) {
+                    existingRecord.dailyStatus = 'ABSENT_APPROVED';
+                    existingRecord.workCount = (approvedLeave.leaveSession === 'ALL_DAY' ? 0 : 0.5) as any;
+                    existingRecord.note = existingRecord.note ? `${existingRecord.note} | Xin nghỉ (${approvedLeave.leaveType})` : `Xin nghỉ (${approvedLeave.leaveType})`;
+                }
                 fullTimesheet.push(existingRecord);
             } else {
+                // Kiểm tra xem có đơn nghỉ phép được duyệt không
+                const approvedLeave = await this.getApprovedLeave(employeeId, currentDate);
+                
                 // Tạo bản ghi giả nếu chưa có chấm công
                 fullTimesheet.push({
                     id: `temp-${day}`,
@@ -460,10 +505,11 @@ export class AttendanceService {
                     lateMinutes: 0,
                     earlyLeaveMinutes: 0,
                     overtimeMinutes: 0,
-                    dailyStatus: 'ABSENT_UNAPPROVED',
-                    workCount: 0,
+                    dailyStatus: approvedLeave ? 'ABSENT_APPROVED' : 'ABSENT_UNAPPROVED',
+                    workCount: approvedLeave ? (approvedLeave.leaveSession === 'ALL_DAY' ? 0 : 0.5) : 0,
                     checkInStatus: null,
                     checkOutStatus: null,
+                    note: approvedLeave ? `Xin nghỉ (${approvedLeave.leaveType})` : null,
                     exceptionRequests: []
                 });
             }
@@ -583,14 +629,24 @@ export class AttendanceService {
             }
         });
 
-        return employees.map(emp => {
+        const results = [];
+        for (const emp of employees) {
             const record = attendanceRecords.find(a => a.employeeId === emp.id);
+            // Kiểm tra nghỉ phép cho placeholder hoặc record vắng mặt
+            const approvedLeave = await this.getApprovedLeave(emp.id, targetDate);
+
             if (record) {
-                return { ...record, employee: emp };
+                if ((!record.checkInTime || record.dailyStatus === 'ABSENT_UNAPPROVED') && approvedLeave) {
+                    record.dailyStatus = 'ABSENT_APPROVED';
+                    record.workCount = (approvedLeave.leaveSession === 'ALL_DAY' ? 0 : 0.5) as any;
+                    record.note = record.note ? `${record.note} | Xin nghỉ (${approvedLeave.leaveType})` : `Xin nghỉ (${approvedLeave.leaveType})`;
+                }
+                results.push({ ...record, employee: emp });
+                continue;
             }
 
             // Nếu chưa có, trả về placeholder
-            return {
+            results.push({
                 id: `today-${emp.id}`,
                 date: targetDate,
                 employeeId: emp.id,
@@ -601,13 +657,15 @@ export class AttendanceService {
                 lateMinutes: 0,
                 earlyLeaveMinutes: 0,
                 overtimeMinutes: 0,
-                dailyStatus: 'ABSENT_UNAPPROVED',
-                workCount: 0,
+                dailyStatus: approvedLeave ? 'ABSENT_APPROVED' : 'ABSENT_UNAPPROVED',
+                workCount: approvedLeave ? (approvedLeave.leaveSession === 'ALL_DAY' ? 0 : 0.5) : 0,
                 checkInStatus: null,
                 checkOutStatus: null,
+                note: approvedLeave ? `Xin nghỉ (${approvedLeave.leaveType})` : null,
                 exceptionRequests: []
-            };
-        });
+            });
+        }
+        return results;
     }
 
     // ========== WORK SHIFT CRUD ==========
@@ -1002,5 +1060,136 @@ export class AttendanceService {
             },
             orderBy: { createdAt: 'desc' }
         });
+    }
+
+    // Xuất file Excel Bảng công
+    async exportTimesheet(month: number, year: number, branchId?: string, search?: string, position?: string) {
+        const ExcelJS = require('exceljs');
+        const workbook = new ExcelJS.Workbook();
+        
+        // --- SHEET 1: TỔNG QUAN ---
+        const summarySheet = workbook.addWorksheet('Tổng quan');
+        summarySheet.columns = [
+            { header: 'STT', key: 'stt', width: 5 },
+            { header: 'Nhân viên', key: 'fullName', width: 25 },
+            { header: 'Chi nhánh', key: 'branchName', width: 20 },
+            { header: 'Chức vụ', key: 'position', width: 15 },
+            { header: 'Tổng công', key: 'totalWorkCount', width: 12 },
+            { header: 'HC (1.0)', key: 'fullDays', width: 10 },
+            { header: 'Công 1/2', key: 'halfDaysCount', width: 10 },
+            { header: 'Nghỉ', key: 'absentDaysCount', width: 10 },
+            { header: 'Muộn', key: 'lateDays', width: 10 },
+            { header: 'Sớm', key: 'earlyLeaveDays', width: 10 },
+            { header: 'TC (H)', key: 'totalOvertimeHours', width: 10 },
+        ];
+
+        // Format Header Sheet 1
+        summarySheet.getRow(1).font = { bold: true };
+        summarySheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD3D3D3' } };
+
+        const summaryData = await this.getMonthlySummary(month, year, branchId, search, position);
+        summaryData.forEach((row, index) => {
+            summarySheet.addRow({
+                stt: index + 1,
+                ...row
+            });
+        });
+
+        // --- SHEET 2: CHI TIẾT ---
+        const detailSheet = workbook.addWorksheet('Chi tiết');
+        detailSheet.columns = [
+            { header: 'STT', key: 'stt', width: 5 },
+            { header: 'Nhân viên', key: 'fullName', width: 25 },
+            { header: 'Ngày', key: 'date', width: 15 },
+            { header: 'Giờ vào', key: 'checkInTime', width: 15 },
+            { header: 'Giờ ra', key: 'checkOutTime', width: 15 },
+            { header: 'Trạng thái vào', key: 'checkInStatus', width: 15 },
+            { header: 'Trạng thái ra', key: 'checkOutStatus', width: 15 },
+            { header: 'Trạng thái ngày', key: 'dailyStatus', width: 15 },
+            { header: 'Đi muộn (phút)', key: 'lateMinutes', width: 15 },
+            { header: 'Về sớm (phút)', key: 'earlyLeaveMinutes', width: 15 },
+            { header: 'Tăng ca (phút)', key: 'overtimeMinutes', width: 15 },
+            { header: 'Tổng phút làm', key: 'totalWorkMinutes', width: 15 },
+            { header: 'Số công', key: 'workCount', width: 10 },
+            { header: 'Ghi chú', key: 'note', width: 30 },
+        ];
+
+        // Format Header Sheet 2
+        detailSheet.getRow(1).font = { bold: true };
+        detailSheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD3D3D3' } };
+
+        const startDate = new Date(Date.UTC(year, month - 1, 1));
+        const endDate = new Date(Date.UTC(year, month, 0));
+        const employeeIds = summaryData.map(s => s.employeeId);
+
+        const attendanceRecords = await this.prisma.attendance.findMany({
+            where: {
+                employeeId: { in: employeeIds },
+                date: {
+                    gte: startDate,
+                    lte: endDate,
+                },
+            },
+            include: { employee: true }
+        });
+
+        const formatDate = (date: Date | null | undefined) => {
+            if (!date) return '';
+            const d = new Date(date);
+            return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
+        };
+
+        const formatTime = (date: Date | null | undefined) => {
+            if (!date) return '';
+            const d = new Date(date);
+            return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+        };
+
+        const now = new Date();
+        const nowUTC = new Date(now.getTime() + 7 * 3600000); // Giờ VN
+        const isCurrentMonth = nowUTC.getUTCFullYear() === year && (nowUTC.getUTCMonth() + 1) === month;
+        const isFutureMonth = (year > nowUTC.getUTCFullYear()) || (year === nowUTC.getUTCFullYear() && month > (nowUTC.getUTCMonth() + 1));
+        
+        const lastDayOfMonth = endDate.getUTCDate();
+        let lastDayToShow = lastDayOfMonth;
+        
+        if (isCurrentMonth) {
+            lastDayToShow = nowUTC.getUTCDate();
+        } else if (isFutureMonth) {
+            lastDayToShow = 0;
+        }
+
+        let rowIndex = 1;
+
+        summaryData.forEach(emp => {
+            for (let day = 1; day <= lastDayToShow; day++) {
+                const currentDate = new Date(Date.UTC(year, month - 1, day));
+                const record = attendanceRecords.find(a => 
+                    a.employeeId === emp.employeeId && 
+                    new Date(a.date).getUTCDate() === day
+                );
+
+                detailSheet.addRow({
+                    stt: rowIndex++,
+                    fullName: emp.fullName,
+                    date: formatDate(currentDate),
+                    checkInTime: record ? formatTime(record.checkInTime) : '',
+                    checkOutTime: record ? formatTime(record.checkOutTime) : '',
+                    checkInStatus: record ? record.checkInStatus || '' : '',
+                    checkOutStatus: record ? record.checkOutStatus || '' : '',
+                    dailyStatus: record ? record.dailyStatus || 'ABSENT_UNAPPROVED' : 'ABSENT_UNAPPROVED',
+                    lateMinutes: record ? record.lateMinutes || 0 : 0,
+                    earlyLeaveMinutes: record ? record.earlyLeaveMinutes || 0 : 0,
+                    overtimeMinutes: record ? record.overtimeMinutes || 0 : 0,
+                    totalWorkMinutes: record ? record.totalWorkMinutes || 0 : 0,
+                    workCount: record ? record.workCount || 0 : 0,
+                    note: record ? record.note || '' : '',
+                });
+            }
+        });
+
+        // Generate buffer
+        const buffer = await workbook.xlsx.writeBuffer();
+        return buffer;
     }
 }
