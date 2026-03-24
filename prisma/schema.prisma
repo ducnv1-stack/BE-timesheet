@@ -23,6 +23,7 @@ model Branch {
   latitude      Float? // Vĩ độ trung tâm chi nhánh
   longitude     Float? // Kinh độ trung tâm chi nhánh
   checkinRadius Int    @default(70) @map("checkin_radius") // Bán kính cho phép (mét)
+  isActive      Boolean @default(true) @map("is_active")
 
   branchType    BranchType @default(CHI_NHANH) @map("branch_type")
   

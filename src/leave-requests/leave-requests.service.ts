@@ -14,7 +14,9 @@ export class LeaveRequestsService {
       throw new BadRequestException('Ngày kết thúc không thể trước ngày bắt đầu');
     }
 
-    return this.prisma.leaveRequest.create({
+    const finalStatus = dto.status === 'APPROVED' ? 'APPROVED' : 'PENDING';
+
+    const request = await this.prisma.leaveRequest.create({
       data: {
         employeeId,
         leaveType: dto.leaveType,
@@ -24,9 +26,17 @@ export class LeaveRequestsService {
         recurringDays: dto.recurringDays || [],
         leaveSession: dto.leaveSession || LeaveSession.ALL_DAY,
         reason: dto.reason,
-        status: 'PENDING',
+        status: finalStatus,
+        approvedAt: finalStatus === 'APPROVED' ? new Date() : undefined,
       },
+      include: { employee: true },
     });
+
+    if (finalStatus === 'APPROVED') {
+      await this.syncAttendanceAfterApproval(request);
+    }
+
+    return request;
   }
 
   async findAll(filters: {
@@ -125,7 +135,7 @@ export class LeaveRequestsService {
     });
   }
 
-  async updateStatus(id: string, status: 'APPROVED' | 'REJECTED', approvedById: string) {
+  async updateStatus(id: string, status: 'APPROVED' | 'REJECTED' | 'CANCELLED', approvedById: string) {
     const request = await this.prisma.leaveRequest.findUnique({
       where: { id },
       include: { employee: true },
@@ -135,7 +145,12 @@ export class LeaveRequestsService {
       throw new NotFoundException('Không tìm thấy đơn nghỉ phép');
     }
 
-    if (request.status !== 'PENDING') {
+    if (status === 'CANCELLED') {
+      // Hoàn tác bảng công nếu đơn đã duyệt
+      if (request.status === 'APPROVED' && !request.isRecurring) {
+        await this.revertAttendanceAfterCancellation(request);
+      }
+    } else if (request.status !== 'PENDING') {
       throw new BadRequestException('Đơn này đã được xử lý trước đó');
     }
 
@@ -151,6 +166,66 @@ export class LeaveRequestsService {
     // Nếu phê duyệt, thực hiện đồng bộ hóa bảng công cho các ngày trong tương lai (hoặc hiện tại)
     if (status === 'APPROVED') {
       await this.syncAttendanceAfterApproval({ ...updatedRequest, employee: request.employee });
+    }
+
+    return updatedRequest;
+  }
+
+  async update(id: string, employeeId: string, isAdmin: boolean, dto: CreateLeaveRequestDto) {
+    const request = await this.prisma.leaveRequest.findUnique({
+      where: { id },
+      include: { employee: true },
+    });
+
+    if (!request) {
+      throw new NotFoundException('Không tìm thấy đơn nghỉ phép');
+    }
+
+    if (!isAdmin && request.employeeId !== employeeId) {
+      throw new BadRequestException('Bạn không có quyền chỉnh sửa đơn này');
+    }
+
+    // Nếu đơn đã được duyệt, chúng ta cần hoàn tác bảng công trước khi cập nhật
+    if (request.status === 'APPROVED' && !request.isRecurring) {
+      await this.revertAttendanceAfterCancellation(request);
+    }
+
+    const startDate = new Date(dto.startDate);
+    const endDate = new Date(dto.endDate);
+
+    if (endDate < startDate) {
+      throw new BadRequestException('Ngày kết thúc không thể trước ngày bắt đầu');
+    }
+
+    // Nếu nhân viên sửa đơn đã DUYỆT hoặc TỪ CHỐI, chuyển nó về CHỜ DUYỆT (trừ khi là Admin sửa)
+    let finalStatus = request.status;
+    if (!isAdmin && (request.status === 'APPROVED' || request.status === 'REJECTED')) {
+      finalStatus = 'PENDING';
+    }
+    // Nếu admin truyền status cụ thể
+    if (isAdmin && dto.status) {
+      finalStatus = dto.status as any;
+    }
+
+    const updatedRequest = await this.prisma.leaveRequest.update({
+      where: { id },
+      data: {
+        leaveType: dto.leaveType,
+        startDate,
+        endDate,
+        isRecurring: dto.isRecurring || false,
+        recurringDays: dto.recurringDays || [],
+        leaveSession: dto.leaveSession || LeaveSession.ALL_DAY,
+        reason: dto.reason,
+        status: finalStatus,
+        approvedAt: finalStatus === 'APPROVED' ? new Date() : request.approvedAt,
+      },
+      include: { employee: true },
+    });
+
+    // Nếu trạng thái mới là APPROVED, thực hiện đồng bộ lại bảng công
+    if (finalStatus === 'APPROVED') {
+      await this.syncAttendanceAfterApproval(updatedRequest);
     }
 
     return updatedRequest;

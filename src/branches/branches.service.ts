@@ -6,9 +6,12 @@ import { PrismaService } from '../prisma/prisma.service';
 export class BranchesService {
     constructor(private prisma: PrismaService) { }
 
-    async findAll(type?: 'KHO_TONG' | 'CHI_NHANH') {
+    async findAll(type?: 'KHO_TONG' | 'CHI_NHANH', isActive?: boolean) {
         return this.prisma.branch.findMany({
-            where: type ? { branchType: type } : undefined,
+            where: {
+                ...(type ? { branchType: type } : {}),
+                ...(isActive !== undefined ? { isActive } : {}),
+            },
             orderBy: { name: 'asc' },
         });
     }
@@ -31,7 +34,8 @@ export class BranchesService {
         branchType?: 'KHO_TONG' | 'CHI_NHANH',
         latitude?: number, 
         longitude?: number, 
-        checkinRadius?: number 
+        checkinRadius?: number,
+        isActive?: boolean
     }) {
         return this.prisma.branch.update({
             where: { id },

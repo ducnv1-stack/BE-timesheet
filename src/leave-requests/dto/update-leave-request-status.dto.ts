@@ -3,6 +3,7 @@ import { IsEnum, IsOptional, IsString } from 'class-validator';
 export enum LeaveRequestStatus {
   APPROVED = 'APPROVED',
   REJECTED = 'REJECTED',
+  CANCELLED = 'CANCELLED',
 }
 
 export class UpdateLeaveRequestStatusDto {

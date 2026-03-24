@@ -142,4 +142,13 @@ export class AttendanceController {
             position
         );
     }
+
+    @Get('pending-counts')
+    async getPendingCounts(
+        @Query('employeeId') employeeId?: string,
+        @Query('branchId') branchId?: string,
+        @Query('roleCode') roleCode?: string,
+    ) {
+        return this.attendanceService.getPendingCounts(employeeId, branchId, roleCode);
+    }
 }

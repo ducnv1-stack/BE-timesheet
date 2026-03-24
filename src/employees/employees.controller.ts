@@ -57,6 +57,11 @@ export class EmployeesController {
         });
     }
 
+    @Get('upcoming-birthdays')
+    getUpcomingBirthdays() {
+        return this.employeesService.getUpcomingBirthdays();
+    }
+
     @Get('account-summary')
     getAccountSummary() {
         return this.employeesService.getAccountSummary();

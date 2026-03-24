@@ -1192,4 +1192,30 @@ export class AttendanceService {
         const buffer = await workbook.xlsx.writeBuffer();
         return buffer;
     }
+
+    async getPendingCounts(employeeId?: string, branchId?: string, roleCode?: string) {
+        const canViewOthers = ['ADMIN', 'DIRECTOR', 'MANAGER', 'CHIEF_ACCOUNTANT', 'HR'].includes(roleCode || '');
+
+        const leaveWhere: any = { status: 'PENDING' };
+        const exceptionWhere: any = { status: 'PENDING' };
+
+        if (!canViewOthers && employeeId) {
+            leaveWhere.employeeId = employeeId;
+            exceptionWhere.employeeId = employeeId;
+        } else if (roleCode === 'MANAGER' && branchId) {
+            leaveWhere.employee = { branchId };
+            exceptionWhere.employee = { branchId };
+        }
+
+        const [leaveCount, exceptionCount] = await Promise.all([
+            this.prisma.leaveRequest.count({ where: leaveWhere }),
+            this.prisma.attendanceExceptionRequest.count({ where: exceptionWhere }),
+        ]);
+
+        return {
+            leaveCount,
+            exceptionCount,
+            totalCount: leaveCount + exceptionCount,
+        };
+    }
 }

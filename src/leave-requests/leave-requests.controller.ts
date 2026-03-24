@@ -56,6 +56,17 @@ export class LeaveRequestsController {
     return this.service.updateStatus(id, updateDto.status, approvedById);
   }
 
+  @Patch(':id')
+  update(
+    @Param('id') id: string,
+    @Body() updateDto: CreateLeaveRequestDto,
+    @Req() req: any
+  ) {
+    const employeeId = req.user?.employee?.id;
+    const isAdmin = req.body.isAdmin || false; // Or check roles if you have a roles guard
+    return this.service.update(id, employeeId, isAdmin, updateDto);
+  }
+
   @Delete(':id')
   remove(@Param('id') id: string, @Body() body: { isAdmin?: boolean, specificDate?: string }, @Req() req: any) {
     const employeeId = req.user?.employee?.id;

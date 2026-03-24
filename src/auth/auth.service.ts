@@ -126,14 +126,53 @@ export class AuthService {
             updateData.passwordHash = await bcrypt.hash(dto.newPassword, 10);
         }
 
-        if (Object.keys(updateData).length === 0) {
+        // Update employee details if provided and user has a linked employee
+        const employeeFields = ['phone', 'email', 'birthday', 'gender', 'permanentAddress', 'idCardNumber'];
+        const employeeUpdateData: any = {};
+        let hasEmployeeUpdate = false;
+
+        const anyDto = dto as any;
+        for (const field of employeeFields) {
+            if (anyDto[field] !== undefined) {
+                hasEmployeeUpdate = true;
+                if (field === 'birthday') {
+                    if (anyDto.birthday) {
+                        const date = new Date(anyDto.birthday);
+                        employeeUpdateData.birthday = date;
+                        employeeUpdateData.birthMonth = date.getMonth() + 1;
+                    } else {
+                        employeeUpdateData.birthday = null;
+                        employeeUpdateData.birthMonth = null;
+                    }
+                } else {
+                    employeeUpdateData[field] = anyDto[field] === '' ? null : anyDto[field];
+                }
+            }
+        }
+
+        if (hasEmployeeUpdate) {
+            const userWithEmployee = await this.prisma.user.findUnique({
+                where: { id: userId },
+                include: { employee: true }
+            });
+            if (userWithEmployee?.employee) {
+                await this.prisma.employee.update({
+                    where: { id: userWithEmployee.employee.id },
+                    data: employeeUpdateData,
+                });
+            }
+        }
+
+        if (Object.keys(updateData).length === 0 && !hasEmployeeUpdate) {
             return { message: 'Không có thay đổi nào' };
         }
 
-        await this.prisma.user.update({
-            where: { id: userId },
-            data: updateData,
-        });
+        if (Object.keys(updateData).length > 0) {
+            await this.prisma.user.update({
+                where: { id: userId },
+                data: updateData,
+            });
+        }
 
         return { message: 'Cập nhật thông tin thành công' };
     }

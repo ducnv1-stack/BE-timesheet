@@ -10,8 +10,12 @@ export class BranchesController {
     ) { }
 
     @Get()
-    findAll(@Query('type') type?: 'KHO_TONG' | 'CHI_NHANH') {
-        return this.branchesService.findAll(type);
+    findAll(
+        @Query('type') type?: 'KHO_TONG' | 'CHI_NHANH',
+        @Query('isActive') isActive?: string,
+    ) {
+        const active = isActive === undefined ? undefined : isActive === 'true';
+        return this.branchesService.findAll(type, active);
     }
 
     @Get(':id')
@@ -72,7 +76,7 @@ export class BranchesController {
 
         // Lọc bỏ những trường không thuộc Branch model để tránh lỗi Prisma
         const safeData: any = {};
-        const allowedFields = ['name', 'code', 'address', 'branchType', 'latitude', 'longitude', 'checkinRadius'];
+        const allowedFields = ['name', 'code', 'address', 'branchType', 'latitude', 'longitude', 'checkinRadius', 'isActive'];
         allowedFields.forEach(field => {
             if (data[field] !== undefined) safeData[field] = data[field];
         });

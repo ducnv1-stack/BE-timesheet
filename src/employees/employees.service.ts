@@ -11,6 +11,59 @@ import * as bcrypt from 'bcrypt';
 @Injectable()
 export class EmployeesService {
     constructor(private prisma: PrismaService) { }
+    
+    async getUpcomingBirthdays() {
+        // Lấy ngày hiện tại và mốc 7 ngày tới
+        const now = new Date();
+        const next7Days = new Date();
+        next7Days.setDate(now.getDate() + 7);
+
+        const currentMonth = now.getMonth() + 1;
+        const nextMonth = next7Days.getMonth() + 1;
+
+        // Fetch những nhân viên có tháng sinh là tháng hiện tại hoặc tháng sau
+        const employees = await this.prisma.employee.findMany({
+            where: {
+                status: { not: 'Nghỉ việc' },
+                birthMonth: { in: [currentMonth, nextMonth] },
+                birthday: { not: null }
+            },
+            include: {
+                branch: { select: { name: true } },
+                pos: { select: { name: true } }
+            }
+        });
+
+        // Filter chính xác 7 ngày trong JS
+        const upcoming = employees.map(emp => {
+            const bday = new Date(emp.birthday!);
+            
+            // Tạo ngày sinh nhật trong năm hiện tại
+            let birthdayThisYear = new Date(now.getFullYear(), bday.getMonth(), bday.getDate());
+            
+            // Nếu sinh nhật đã qua trong năm nay và tháng 12/tháng 1, có thể rơi vào năm sau
+            // Nhưng ở đây ta chỉ quan tâm trong 7 ngày tới kể từ 'now'
+            // Nếu tháng 12 mà search tới tháng 1 năm sau:
+            if (currentMonth === 12 && nextMonth === 1 && bday.getMonth() === 0) {
+                birthdayThisYear.setFullYear(now.getFullYear() + 1);
+            }
+
+            // Tính số ngày còn lại
+            const diffTime = birthdayThisYear.getTime() - now.getTime();
+            const daysRemaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+            return {
+                ...emp,
+                daysRemaining,
+                birthdayDate: bday.getDate(),
+                birthdayMonth: bday.getMonth() + 1
+            };
+        })
+        .filter(emp => emp.daysRemaining >= 0 && emp.daysRemaining <= 7)
+        .sort((a, b) => a.daysRemaining - b.daysRemaining);
+
+        return upcoming;
+    }
 
     async findAll(query: {
         branchId?: string;

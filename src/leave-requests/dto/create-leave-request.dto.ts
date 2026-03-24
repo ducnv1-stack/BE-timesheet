@@ -35,4 +35,12 @@ export class CreateLeaveRequestDto {
   @IsString()
   @IsOptional()
   reason?: string;
+
+  @IsString()
+  @IsOptional()
+  status?: string;
+
+  @IsBoolean()
+  @IsOptional()
+  isAdmin?: boolean;
 }
