@@ -567,7 +567,11 @@ export class AttendanceService {
             const halfDaysTotal = empAttendance.filter(a => Number(a.workCount) > 0 && Number(a.workCount) < 1.0).reduce((acc, a) => acc + (Number(a.workCount) || 0), 0);
             const lateDays = empAttendance.filter(a => a.checkInStatus === 'LATE' || a.checkInStatus === 'LATE_SERIOUS').length;
             const earlyLeaveDays = empAttendance.filter(a => a.checkOutStatus === 'EARLY_LEAVE').length;
-            const absentDaysCount = empAttendance.filter(a => a.dailyStatus?.startsWith('ABSENT')).length;
+            const absentDaysCount = empAttendance.filter(a => {
+                const isAbsent = a.dailyStatus?.startsWith('ABSENT');
+                const isSunday = new Date(a.date).getUTCDay() === 0;
+                return isAbsent && !isSunday;
+            }).length;
             const totalOvertimeMinutes = empAttendance.reduce((acc, a) => acc + (a.overtimeMinutes || 0), 0);
 
             return {
@@ -1067,68 +1071,70 @@ export class AttendanceService {
         const ExcelJS = require('exceljs');
         const workbook = new ExcelJS.Workbook();
         
-        // --- SHEET 1: TỔNG QUAN ---
-        const summarySheet = workbook.addWorksheet('Tổng quan');
-        summarySheet.columns = [
-            { header: 'STT', key: 'stt', width: 5 },
-            { header: 'Nhân viên', key: 'fullName', width: 25 },
-            { header: 'Chi nhánh', key: 'branchName', width: 20 },
-            { header: 'Chức vụ', key: 'position', width: 15 },
-            { header: 'Tổng công', key: 'totalWorkCount', width: 12 },
-            { header: 'HC (1.0)', key: 'fullDays', width: 10 },
-            { header: 'Công 1/2', key: 'halfDaysCount', width: 10 },
-            { header: 'Nghỉ', key: 'absentDaysCount', width: 10 },
-            { header: 'Muộn', key: 'lateDays', width: 10 },
-            { header: 'Sớm', key: 'earlyLeaveDays', width: 10 },
-            { header: 'TC (H)', key: 'totalOvertimeHours', width: 10 },
-        ];
+        // --- ĐỊNH NGHĨA STYLE CHUNG ---
+        const colors = {
+            primary: 'FF1F4E78', // Xanh Navy đậm chuyên nghiệp
+            secondary: 'FFE0E7FF',
+            headerText: 'FFFFFFFF',
+            border: 'FFD1D5DB',
+            zebra: 'FFF9FAFB',
+        };
 
-        // Format Header Sheet 1
-        summarySheet.getRow(1).font = { bold: true };
-        summarySheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD3D3D3' } };
+        const headerStyle = {
+            font: { bold: true, color: { argb: colors.headerText }, size: 11 },
+            fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.primary } },
+            alignment: { vertical: 'middle', horizontal: 'center' },
+            border: {
+                top: { style: 'thin', color: { argb: colors.border } },
+                left: { style: 'thin', color: { argb: colors.border } },
+                bottom: { style: 'thin', color: { argb: colors.border } },
+                right: { style: 'thin', color: { argb: colors.border } }
+            }
+        };
 
-        const summaryData = await this.getMonthlySummary(month, year, branchId, search, position);
-        summaryData.forEach((row, index) => {
-            summarySheet.addRow({
-                stt: index + 1,
-                ...row
-            });
-        });
+        const cellStyle = {
+            border: {
+                top: { style: 'thin', color: { argb: colors.border } },
+                left: { style: 'thin', color: { argb: colors.border } },
+                bottom: { style: 'thin', color: { argb: colors.border } },
+                right: { style: 'thin', color: { argb: colors.border } }
+            },
+            alignment: { vertical: 'middle' }
+        };
 
-        // --- SHEET 2: CHI TIẾT ---
-        const detailSheet = workbook.addWorksheet('Chi tiết');
+        // --- SHEET 2: CHI TIẾT (LÀM NGUỒN DỮ LIỆU) ---
+        const detailSheet = workbook.addWorksheet('Chi_tiet');
         detailSheet.columns = [
             { header: 'STT', key: 'stt', width: 5 },
             { header: 'Nhân viên', key: 'fullName', width: 25 },
-            { header: 'Ngày', key: 'date', width: 15 },
-            { header: 'Giờ vào', key: 'checkInTime', width: 15 },
-            { header: 'Giờ ra', key: 'checkOutTime', width: 15 },
+            { header: 'Ngày', key: 'date', width: 12 },
+            { header: 'Thứ', key: 'dayOfWeek', width: 8 },
+            { header: 'Giờ vào', key: 'checkInTime', width: 10 },
+            { header: 'Giờ ra', key: 'checkOutTime', width: 10 },
             { header: 'Trạng thái vào', key: 'checkInStatus', width: 15 },
             { header: 'Trạng thái ra', key: 'checkOutStatus', width: 15 },
-            { header: 'Trạng thái ngày', key: 'dailyStatus', width: 15 },
-            { header: 'Đi muộn (phút)', key: 'lateMinutes', width: 15 },
-            { header: 'Về sớm (phút)', key: 'earlyLeaveMinutes', width: 15 },
-            { header: 'Tăng ca (phút)', key: 'overtimeMinutes', width: 15 },
-            { header: 'Tổng phút làm', key: 'totalWorkMinutes', width: 15 },
+            { header: 'Trạng thái ngày', key: 'dailyStatus', width: 18 },
+            { header: 'Muộn (phút)', key: 'lateMinutes', width: 12 },
+            { header: 'Sớm (phút)', key: 'earlyLeaveMinutes', width: 12 },
+            { header: 'TC (phút)', key: 'overtimeMinutes', width: 12 },
+            { header: 'Phút làm', key: 'totalWorkMinutes', width: 12 },
             { header: 'Số công', key: 'workCount', width: 10 },
-            { header: 'Ghi chú', key: 'note', width: 30 },
         ];
 
-        // Format Header Sheet 2
-        detailSheet.getRow(1).font = { bold: true };
-        detailSheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD3D3D3' } };
+        // Header Style cho Sheet Chi tiết
+        detailSheet.getRow(1).eachCell((cell: any) => {
+            cell.style = headerStyle as any;
+        });
 
+        const summaryData = await this.getMonthlySummary(month, year, branchId, search, position);
+        const employeeIds = summaryData.map(s => s.employeeId);
         const startDate = new Date(Date.UTC(year, month - 1, 1));
         const endDate = new Date(Date.UTC(year, month, 0));
-        const employeeIds = summaryData.map(s => s.employeeId);
 
         const attendanceRecords = await this.prisma.attendance.findMany({
             where: {
                 employeeId: { in: employeeIds },
-                date: {
-                    gte: startDate,
-                    lte: endDate,
-                },
+                date: { gte: startDate, lte: endDate },
             },
             include: { employee: true }
         });
@@ -1136,13 +1142,45 @@ export class AttendanceService {
         const formatDate = (date: Date | null | undefined) => {
             if (!date) return '';
             const d = new Date(date);
-            return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
+            return `${d.getUTCDate().toString().padStart(2, '0')}/${(d.getUTCMonth() + 1).toString().padStart(2, '0')}/${d.getUTCFullYear()}`;
+        };
+
+        const getVNTime = (date: Date | null | undefined) => {
+             if (!date) return null;
+             return new Date(new Date(date).getTime() + 7 * 3600000);
         };
 
         const formatTime = (date: Date | null | undefined) => {
-            if (!date) return '';
-            const d = new Date(date);
-            return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+            const dVN = getVNTime(date);
+            if (!dVN) return '';
+            return `${dVN.getUTCHours().toString().padStart(2, '0')}:${dVN.getUTCMinutes().toString().padStart(2, '0')}`;
+        };
+
+        const getDayName = (date: Date) => {
+            const days = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
+            return days[date.getUTCDay()];
+        };
+
+        const translateStatus = (status: string | null) => {
+            if (!status) return '';
+            switch (status) {
+                case 'ON_TIME': return 'Đúng giờ';
+                case 'LATE': return 'Vào muộn';
+                case 'LATE_SERIOUS': return 'Muộn nghiêm trọng';
+                case 'MISSING_IN': return 'Quên Check-in';
+                case 'MISSING_OUT': return 'Quên Check-out';
+                case 'EARLY_LEAVE': return 'Về sớm';
+                case 'OVERTIME': return 'Tăng ca';
+                case 'FULL_DAY': return 'Cả ngày';
+                case 'HALF_DAY_MORNING': return 'Ca sáng';
+                case 'HALF_DAY_AFTERNOON': return 'Ca chiều';
+                case 'LATE_DAY': return 'Ngày đi muộn';
+                case 'ABSENT_APPROVED': return 'Vắng có phép';
+                case 'ABSENT_UNAPPROVED': return 'Vắng không phép';
+                case 'INVALID': return 'Không hợp lệ';
+                case 'INCOMPLETE': return 'Công dở dang';
+                default: return status;
+            }
         };
 
         const now = new Date();
@@ -1150,17 +1188,11 @@ export class AttendanceService {
         const isCurrentMonth = nowUTC.getUTCFullYear() === year && (nowUTC.getUTCMonth() + 1) === month;
         const isFutureMonth = (year > nowUTC.getUTCFullYear()) || (year === nowUTC.getUTCFullYear() && month > (nowUTC.getUTCMonth() + 1));
         
-        const lastDayOfMonth = endDate.getUTCDate();
-        let lastDayToShow = lastDayOfMonth;
-        
-        if (isCurrentMonth) {
-            lastDayToShow = nowUTC.getUTCDate();
-        } else if (isFutureMonth) {
-            lastDayToShow = 0;
-        }
+        let lastDayToShow = endDate.getUTCDate();
+        if (isCurrentMonth) lastDayToShow = nowUTC.getUTCDate();
+        else if (isFutureMonth) lastDayToShow = 0;
 
-        let rowIndex = 1;
-
+        let detailRowIndex = 2; // Bắt đầu từ dòng 2 (sau header)
         summaryData.forEach(emp => {
             for (let day = 1; day <= lastDayToShow; day++) {
                 const currentDate = new Date(Date.UTC(year, month - 1, day));
@@ -1169,29 +1201,128 @@ export class AttendanceService {
                     new Date(a.date).getUTCDate() === day
                 );
 
-                detailSheet.addRow({
-                    stt: rowIndex++,
+                const isSunday = currentDate.getUTCDay() === 0;
+                const isSaturday = currentDate.getUTCDay() === 6;
+
+                // Xử lý nhãn trạng thái ngày
+                let displayDailyStatus = '';
+                if (record) {
+                    displayDailyStatus = translateStatus(record.dailyStatus);
+                    // Nếu là Thứ 7 và làm công nửa ngày (hoặc về lúc 12h), ưu tiên hiển thị "Ca sáng"
+                    if (isSaturday && (Number(record.workCount || 0) <= 0.5 || (record.checkOutTime && new Date(record.checkOutTime).getUTCHours() <= 5))) { // 5h UTC = 12h VN
+                        if (record.dailyStatus === 'FULL_DAY' || record.dailyStatus === 'HALF_DAY_MORNING') {
+                            displayDailyStatus = 'Ca sáng';
+                        }
+                    }
+                } else {
+                    displayDailyStatus = isSunday ? 'Nghỉ tuần' : translateStatus('ABSENT_UNAPPROVED');
+                }
+
+                const row = detailSheet.addRow({
+                    stt: detailRowIndex - 1,
                     fullName: emp.fullName,
                     date: formatDate(currentDate),
+                    dayOfWeek: getDayName(currentDate),
                     checkInTime: record ? formatTime(record.checkInTime) : '',
                     checkOutTime: record ? formatTime(record.checkOutTime) : '',
-                    checkInStatus: record ? record.checkInStatus || '' : '',
-                    checkOutStatus: record ? record.checkOutStatus || '' : '',
-                    dailyStatus: record ? record.dailyStatus || 'ABSENT_UNAPPROVED' : 'ABSENT_UNAPPROVED',
+                    checkInStatus: record ? translateStatus(record.checkInStatus) : '',
+                    checkOutStatus: record ? translateStatus(record.checkOutStatus) : '',
+                    dailyStatus: displayDailyStatus,
                     lateMinutes: record ? record.lateMinutes || 0 : 0,
                     earlyLeaveMinutes: record ? record.earlyLeaveMinutes || 0 : 0,
                     overtimeMinutes: record ? record.overtimeMinutes || 0 : 0,
                     totalWorkMinutes: record ? record.totalWorkMinutes || 0 : 0,
-                    workCount: record ? record.workCount || 0 : 0,
-                    note: record ? record.note || '' : '',
+                    workCount: record ? (Number(record.workCount) || 0) : 0,
                 });
+
+                // Style cho dòng dữ liệu
+                row.eachCell((cell: any) => {
+                    cell.style = cellStyle as any;
+                    if (detailRowIndex % 2 === 0) {
+                        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.zebra } };
+                    }
+                });
+                detailRowIndex++;
             }
         });
+
+        // --- SHEET 1: TỔNG QUAN (SỬ DỤNG CÔNG THỨC) ---
+        const summarySheet = workbook.addWorksheet('Tong_quan');
+        
+        // Tiêu đề báo cáo
+        summarySheet.mergeCells('A1:L1');
+        summarySheet.getCell('A1').value = `BẢNG TỔNG HỢP CÔNG - THÁNG ${month}/${year}`;
+        summarySheet.getCell('A1').font = { bold: true, size: 14, color: { argb: colors.primary } };
+        summarySheet.getCell('A1').alignment = { horizontal: 'center', vertical: 'middle' };
+        summarySheet.getRow(1).height = 30;
+
+        summarySheet.getRow(3).values = [
+            'STT', 'Nhân viên', 'Chi nhánh', 'Chức vụ', 
+            'Tổng công', 'HC (1.0)', 'Công 1/2', 'Nghỉ', 
+            'Muộn', 'Sớm', 'TC (H)', 'Phụ cấp ăn trưa'
+        ];
+
+        summarySheet.columns = [
+            { key: 'stt', width: 5 },
+            { key: 'fullName', width: 25 },
+            { key: 'branchName', width: 20 },
+            { key: 'position', width: 15 },
+            { key: 'totalWorkCount', width: 12 },
+            { key: 'fullDays', width: 10 },
+            { key: 'halfDaysCount', width: 10 },
+            { key: 'absentDaysCount', width: 10 },
+            { key: 'lateDays', width: 10 },
+            { key: 'earlyLeaveDays', width: 10 },
+            { key: 'totalOvertimeHours', width: 10 },
+            { key: 'lunchAllowance', width: 18 },
+        ];
+
+        // Header Style cho Sheet Tổng quan (Dòng 3)
+        summarySheet.getRow(3).eachCell((cell: any) => {
+            cell.style = headerStyle as any;
+        });
+
+        summaryData.forEach((emp, index) => {
+            const rowIndex = index + 4; // Dữ liệu bắt đầu từ dòng 4
+            const empNameCell = `$B${rowIndex}`;
+
+            const row = summarySheet.addRow({
+                stt: index + 1,
+                fullName: emp.fullName,
+                branchName: emp.branchName,
+                position: emp.position,
+                // Công thức liên kết Sheet Chi_tiet (Lưu ý: các cột Sheet Chi_tiet đã thay đổi khi thêm cột Thứ)
+                // Nhân viên: B, Thứ: D, Ngày Status: I, Muộn: J, Sớm: K, OT: L, Số công: N
+                totalWorkCount: { formula: `SUMIF(Chi_tiet!$B:$B, ${empNameCell}, Chi_tiet!$N:$N)`, value: emp.totalWorkCount },
+                fullDays: { formula: `COUNTIFS(Chi_tiet!$B:$B, ${empNameCell}, Chi_tiet!$N:$N, ">=1")`, value: emp.fullDays },
+                halfDaysCount: { formula: `SUMIFS(Chi_tiet!$N:$N, Chi_tiet!$B:$B, ${empNameCell}, Chi_tiet!$N:$N, ">0", Chi_tiet!$N:$N, "<1")`, value: emp.halfDaysTotal },
+                absentDaysCount: { formula: `COUNTIFS(Chi_tiet!$B:$B, ${empNameCell}, Chi_tiet!$I:$I, "*Vắng*")`, value: emp.absentDaysCount },
+                lateDays: { formula: `COUNTIFS(Chi_tiet!$B:$B, ${empNameCell}, Chi_tiet!$G:$G, "*muộn*")`, value: emp.lateDays },
+                earlyLeaveDays: { formula: `COUNTIFS(Chi_tiet!$B:$B, ${empNameCell}, Chi_tiet!$H:$H, "*sớm*")`, value: emp.earlyLeaveDays },
+                totalOvertimeHours: { formula: `SUMIF(Chi_tiet!$B:$B, ${empNameCell}, Chi_tiet!$L:$L) / 60`, value: emp.totalOvertimeHours },
+                lunchAllowance: { formula: `$F${rowIndex} * 35000`, value: emp.fullDays * 35000 },
+            });
+
+            // Định dạng tiền tệ cho cột Phụ cấp
+            row.getCell('lunchAllowance').numFmt = '#,##0';
+
+            // Style cho dòng dữ liệu
+            row.eachCell((cell: any) => {
+                cell.style = cellStyle as any;
+                if (rowIndex % 2 === 0) {
+                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.zebra } };
+                }
+            });
+        });
+
+        // Di chuyển Sheet Tổng quan lên đầu
+        workbook.worksheets.reverse();
 
         // Generate buffer
         const buffer = await workbook.xlsx.writeBuffer();
         return buffer;
     }
+
 
     async getPendingCounts(employeeId?: string, branchId?: string, roleCode?: string) {
         const canViewOthers = ['ADMIN', 'DIRECTOR', 'MANAGER', 'CHIEF_ACCOUNTANT', 'HR'].includes(roleCode || '');
@@ -1216,6 +1347,174 @@ export class AttendanceService {
             leaveCount,
             exceptionCount,
             totalCount: leaveCount + exceptionCount,
+        };
+    }
+
+    async seedHeavyRevenue() {
+        console.log('--- Bắt đầu quy trình Seed 500 tỷ doanh số ---');
+
+        // 1. Dọn dẹp dữ liệu cũ (Xóa đơn hàng)
+        // Xóa theo thứ tự ràng buộc để không bị lỗi ForeignKey
+        await this.prisma.$transaction([
+            this.prisma.orderGift.deleteMany(),
+            this.prisma.orderItem.deleteMany(),
+            this.prisma.orderSplit.deleteMany(),
+            this.prisma.payment.deleteMany(),
+            this.prisma.delivery.deleteMany(),
+            this.prisma.orderAuditLog.deleteMany(),
+            this.prisma.order.deleteMany(),
+        ]);
+
+        // 2. Lấy dữ liệu cơ sở
+        const branches = await this.prisma.branch.findMany();
+        const products = await this.prisma.product.findMany();
+        const employees = await this.prisma.employee.findMany({
+            include: { user: { include: { role: true } } }
+        });
+        const adminUser = await this.prisma.user.findFirst({ where: { role: { code: 'ADMIN' } } });
+
+        if (!branches.length || !products.length || !employees.length || !adminUser) {
+            throw new Error('Thiếu dữ liệu cơ sở (Chi nhánh, Sản phẩm, Nhân viên hoặc Admin) để seed.');
+        }
+
+        // Lọc nhân viên sale/manager để chia doanh số
+        const salesStaff = employees.filter(e => 
+            e.user?.role?.code && ['ADMIN', 'DIRECTOR', 'MANAGER', 'SALE', 'TELESALE'].includes(e.user.role.code)
+        );
+
+        if (!salesStaff.length) throw new Error('Không tìm thấy nhân viên Sale/Manager để gán doanh số.');
+
+        // 3. Cấu hình sinh dữ liệu
+        const TARGET_REVENUE = 500000000000;
+        const DAYS_TO_SEED = 90;
+        const startDate = new Date();
+        startDate.setDate(startDate.getDate() - DAYS_TO_SEED);
+
+        const hoList = ['Nguyễn', 'Trần', 'Lê', 'Phạm', 'Hoàng', 'Phan', 'Vũ', 'Đặng', 'Bùi', 'Đỗ', 'Hồ', 'Ngô', 'Dương', 'Lý'];
+        const demList = ['Văn', 'Thị', 'Hải', 'Minh', 'Thanh', 'Đức', 'Hữu', 'Quốc', 'Anh', 'Ngọc', 'Công', 'Quang', 'Hồng', 'Kim'];
+        const tenList = ['Hùng', 'Tuấn', 'Anh', 'Dũng', 'Phương', 'Thảo', 'Mai', 'Hương', 'Nam', 'Việt', 'Lan', 'Cường', 'Sơn', 'Tùng', 'Hoàng', 'Long', 'Trang'];
+        const phonePrefixes = ['098', '097', '096', '032', '035', '038', '039', '086', '091', '094', '088', '081', '082', '090', '093', '070', '079', '077'];
+
+        const crypto = require('crypto');
+        const getRandomName = () => `${hoList[Math.floor(Math.random() * hoList.length)]} ${demList[Math.floor(Math.random() * demList.length)]} ${tenList[Math.floor(Math.random() * tenList.length)]}`;
+        const getRandomPhone = () => {
+            const prefix = phonePrefixes[Math.floor(Math.random() * phonePrefixes.length)];
+            const suffix = Math.floor(Math.random() * 10000000).toString().padStart(7, '0');
+            return `${prefix}${suffix}`;
+        };
+
+        let totalOrdersCreated = 0;
+        let totalRevenueGenerated = 0;
+        const targetPerBranch = TARGET_REVENUE / branches.length;
+
+        // Chạy vòng lặp qua từng chi nhánh để đảm bảo phân bổ đều
+        for (const branch of branches) {
+            let branchRevenue = 0;
+            const branchSalesStaff = salesStaff.filter(s => s.branchId === branch.id);
+            const staffToUse = branchSalesStaff.length > 0 ? branchSalesStaff : salesStaff;
+
+            console.log(`Đang seed cho chi nhánh: ${branch.name} (Mục tiêu: ${targetPerBranch.toLocaleString()} VNĐ)`);
+
+            while (branchRevenue < targetPerBranch) {
+                const orderBatch: any[] = [];
+                const itemBatch: any[] = [];
+                const splitBatch: any[] = [];
+                const paymentBatch: any[] = [];
+                const BATCH_SIZE = 200; // Batch nhỏ hơn để kiểm soát chính xác cho từng chi nhánh
+
+                for (let i = 0; i < BATCH_SIZE && branchRevenue < targetPerBranch; i++) {
+                    const product = products[Math.floor(Math.random() * products.length)];
+                    const sale = staffToUse[Math.floor(Math.random() * staffToUse.length)];
+                    
+                    const randomDayOffset = Math.floor(Math.random() * DAYS_TO_SEED);
+                    const orderDate = new Date(startDate.getTime());
+                    orderDate.setDate(orderDate.getDate() + randomDayOffset);
+                    
+                    const isEvening = Math.random() > 0.7;
+                    orderDate.setHours(isEvening ? (18 + Math.floor(Math.random() * 4)) : (8 + Math.floor(Math.random() * 10)));
+                    orderDate.setMinutes(Math.floor(Math.random() * 60));
+
+                    const orderId = crypto.randomUUID();
+                    const totalAmount = Number(product.minPrice);
+
+                    // Thuật toán trạng thái ngẫu nhiên:
+                    // 70% đã giao (delivered), 15% đang xử lý (assigned), 10% chờ (pending), 5% hủy (canceled)
+                    const rand = Math.random();
+                    let status = 'delivered';
+                    if (rand > 0.7 && rand <= 0.85) status = 'assigned';
+                    else if (rand > 0.85 && rand <= 0.95) status = 'pending';
+                    else if (rand > 0.95) status = 'canceled';
+
+                    const isConfirmed = status === 'delivered';
+
+                    orderBatch.push({
+                        id: orderId,
+                        branchId: branch.id,
+                        customerName: getRandomName(),
+                        customerPhone: getRandomPhone(),
+                        customerAddress: 'Khu vực ' + branch.name,
+                        orderDate: orderDate,
+                        orderSource: ['hotline', 'fanpage', 'vãng lai', 'giới thiệu'][Math.floor(Math.random() * 4)],
+                        status: status,
+                        totalAmount: totalAmount,
+                        createdBy: adminUser.id,
+                        isPaymentConfirmed: isConfirmed,
+                        confirmedById: isConfirmed ? adminUser.id : null,
+                        confirmedAt: isConfirmed ? orderDate : null,
+                        updatedAt: orderDate,
+                        createdAt: orderDate,
+                    });
+
+                    itemBatch.push({
+                        id: crypto.randomUUID(),
+                        orderId: orderId,
+                        productId: product.id,
+                        quantity: 1,
+                        unitPrice: totalAmount,
+                        totalPrice: totalAmount,
+                        minPriceAtSale: totalAmount,
+                        isBelowMin: false,
+                    });
+
+                    splitBatch.push({
+                        id: crypto.randomUUID(),
+                        orderId: orderId,
+                        employeeId: sale.id,
+                        branchId: branch.id,
+                        splitPercent: 100,
+                        splitAmount: totalAmount,
+                    });
+
+                    // Chỉ tạo thanh toán cho các đơn đã giao hoặc đang xử lý
+                    if (status === 'delivered' || status === 'assigned') {
+                        paymentBatch.push({
+                            id: crypto.randomUUID(),
+                            orderId: orderId,
+                            paymentMethod: Math.random() > 0.5 ? 'transfer' : 'cash',
+                            amount: status === 'delivered' ? totalAmount : (totalAmount * 0.3), // Trả trước 30% nếu đang xử lý
+                            paidAt: orderDate,
+                        });
+                    }
+
+                    branchRevenue += totalAmount;
+                    totalOrdersCreated++;
+                    totalRevenueGenerated += totalAmount;
+                }
+
+                // Chèn theo Batch cho từng chi nhánh
+                await this.prisma.order.createMany({ data: orderBatch });
+                await this.prisma.orderItem.createMany({ data: itemBatch });
+                await this.prisma.orderSplit.createMany({ data: splitBatch });
+                await this.prisma.payment.createMany({ data: paymentBatch });
+            }
+            console.log(`Hoàn tất chi nhánh: ${branch.name}. Doanh số: ${branchRevenue.toLocaleString()} VNĐ`);
+        }
+
+        return {
+            success: true,
+            totalOrders: totalOrdersCreated,
+            totalRevenue: totalRevenueGenerated,
+            message: `Hoàn tất seed ${totalRevenueGenerated.toLocaleString()} VNĐ chia đều cho ${branches.length} chi nhánh.`
         };
     }
 }

@@ -151,4 +151,9 @@ export class AttendanceController {
     ) {
         return this.attendanceService.getPendingCounts(employeeId, branchId, roleCode);
     }
+
+    @Post('seed-heavy-revenue')
+    async seedHeavyRevenue() {
+        return this.attendanceService.seedHeavyRevenue();
+    }
 }
