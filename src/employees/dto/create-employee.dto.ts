@@ -81,6 +81,18 @@ export class CreateEmployeeDto {
     customDiligentSalary?: number;
 
     @IsOptional()
+    customLunchAllowance?: number;
+
+    @IsOptional()
+    customLunchAllowanceType?: 'DAILY' | 'MONTHLY';
+
+    @IsOptional()
+    customTravelAllowance?: number;
+
+    @IsOptional()
+    customTechnicalAllowance?: number;
+
+    @IsOptional()
     customAllowance?: number;
 
     @IsOptional()

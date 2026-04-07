@@ -523,7 +523,7 @@ export class AttendanceService {
         const startDate = new Date(Date.UTC(year, month - 1, 1));
         const endDate = new Date(Date.UTC(year, month, 0));
 
-        const employees = await this.prisma.employee.findMany({
+        const employees = await (this.prisma.employee.findMany as any)({
             where: {
                 status: { not: 'Nghỉ việc' },
                 ...(branchId ? { branchId } : {}),
@@ -539,14 +539,35 @@ export class AttendanceService {
                 id: true,
                 fullName: true,
                 phone: true,
-                pos: { select: { name: true } },
+                pos: { 
+                    select: { 
+                        name: true,
+                        baseSalary: true,
+                        diligentSalary: true,
+                        lunchAllowance: true,
+                        lunchAllowanceType: true,
+                        travelAllowance: true,
+                        technicalAllowance: true,
+                        allowance: true,
+                        standardWorkingDays: true
+                    } 
+                },
                 avatarUrl: true,
-                branch: { select: { name: true } }
-            },
+                branch: { select: { name: true } },
+                customBaseSalary: true,
+                customDiligentSalary: true,
+                customLunchAllowance: true,
+                customLunchAllowanceType: true,
+                customTravelAllowance: true,
+                customTechnicalAllowance: true,
+                customAllowance: true,
+                customStandardWorkingDays: true,
+                position: true
+            } as any,
             orderBy: { fullName: 'asc' }
         });
 
-        const employeeIds = employees.map(e => e.id);
+        const employeeIds = employees.map((e: any) => e.id);
 
         const attendanceRecords = await this.prisma.attendance.findMany({
             where: {
@@ -558,29 +579,38 @@ export class AttendanceService {
             }
         });
 
-        const summary = employees.map(emp => {
-            const empAttendance = attendanceRecords.filter(a => a.employeeId === emp.id);
+        const summary = employees.map((emp: any) => {
+            const empAttendance = attendanceRecords.filter((a: any) => a.employeeId === emp.id);
 
-            const totalWorkCount = empAttendance.reduce((acc, a) => acc + (Number(a.workCount) || 0), 0);
-            const fullDays = empAttendance.filter(a => Number(a.workCount) >= 1.0).length;
-            const halfDaysCount = empAttendance.filter(a => Number(a.workCount) > 0 && Number(a.workCount) < 1.0).length;
-            const halfDaysTotal = empAttendance.filter(a => Number(a.workCount) > 0 && Number(a.workCount) < 1.0).reduce((acc, a) => acc + (Number(a.workCount) || 0), 0);
-            const lateDays = empAttendance.filter(a => a.checkInStatus === 'LATE' || a.checkInStatus === 'LATE_SERIOUS').length;
-            const earlyLeaveDays = empAttendance.filter(a => a.checkOutStatus === 'EARLY_LEAVE').length;
-            const absentDaysCount = empAttendance.filter(a => {
-                const isAbsent = a.dailyStatus?.startsWith('ABSENT');
+            const totalWorkCount = empAttendance.reduce((acc: number, a: any) => acc + (Number(a.workCount) || 0), 0);
+            const fullDays = empAttendance.filter((a: any) => Number(a.workCount) >= 1.0).length;
+            const halfDaysCount = empAttendance.filter((a: any) => Number(a.workCount) > 0 && Number(a.workCount) < 1.0).length;
+            const halfDaysTotal = empAttendance.filter((a: any) => Number(a.workCount) > 0 && Number(a.workCount) < 1.0).reduce((acc: number, a: any) => acc + (Number(a.workCount) || 0), 0);
+            const lateDays = empAttendance.filter((a: any) => a.checkInStatus === 'LATE' || a.checkInStatus === 'LATE_SERIOUS').length;
+            const earlyLeaveDays = empAttendance.filter((a: any) => a.checkOutStatus === 'EARLY_LEAVE').length;
+            const absentDaysCount = empAttendance.filter((a: any) => {
+                const isAbsent = (a as any).dailyStatus?.startsWith('ABSENT');
                 const isSunday = new Date(a.date).getUTCDay() === 0;
                 return isAbsent && !isSunday;
             }).length;
-            const totalOvertimeMinutes = empAttendance.reduce((acc, a) => acc + (a.overtimeMinutes || 0), 0);
+            const totalOvertimeMinutes = empAttendance.reduce((acc: number, a: any) => acc + (a.overtimeMinutes || 0), 0);
+
+            const e = emp as any;
+            const lunchType = e.customLunchAllowanceType ?? e.pos?.lunchAllowanceType ?? 'DAILY';
+            const lunchRate = Number(e.customLunchAllowance ?? e.pos?.lunchAllowance ?? 0);
+            const travelAllowance = Number(e.customTravelAllowance ?? e.pos?.travelAllowance ?? 0);
+            const technicalAllowance = Number(e.customTechnicalAllowance ?? e.pos?.technicalAllowance ?? 0);
+            const otherAllowance = Number(e.customAllowance ?? e.pos?.allowance ?? 0);
+
+            const lunchAllowance = (lunchType === 'DAILY') ? lunchRate * fullDays : lunchRate;
 
             return {
-                employeeId: emp.id,
-                fullName: emp.fullName,
-                phone: emp.phone,
-                avatarUrl: emp.avatarUrl,
-                branchName: emp.branch.name,
-                position: emp.pos?.name || 'Chưa gán',
+                employeeId: e.id,
+                fullName: e.fullName,
+                phone: e.phone,
+                avatarUrl: e.avatarUrl,
+                branchName: e.branch?.name || '---',
+                position: e.position || e.pos?.name || '---',
                 totalWorkCount,
                 fullDays,
                 halfDaysCount,
@@ -588,7 +618,13 @@ export class AttendanceService {
                 lateDays,
                 earlyLeaveDays,
                 absentDaysCount,
-                totalOvertimeHours: (totalOvertimeMinutes / 60).toFixed(1)
+                totalOvertimeHours: (totalOvertimeMinutes / 60).toFixed(1),
+                // New fields for overview tab
+                lunchAllowance,
+                travelAllowance,
+                technicalAllowance,
+                otherAllowance,
+                totalAllowance: lunchAllowance + travelAllowance + technicalAllowance + otherAllowance
             };
         });
 
@@ -1126,8 +1162,8 @@ export class AttendanceService {
             cell.style = headerStyle as any;
         });
 
-        const summaryData = await this.getMonthlySummary(month, year, branchId, search, position);
-        const employeeIds = summaryData.map(s => s.employeeId);
+        const summaryData = await (this.getMonthlySummary(month, year, branchId, search, position) as any);
+        const employeeIds = summaryData.map((s: any) => s.employeeId);
         const startDate = new Date(Date.UTC(year, month - 1, 1));
         const endDate = new Date(Date.UTC(year, month, 0));
 
@@ -1193,7 +1229,7 @@ export class AttendanceService {
         else if (isFutureMonth) lastDayToShow = 0;
 
         let detailRowIndex = 2; // Bắt đầu từ dòng 2 (sau header)
-        summaryData.forEach(emp => {
+        summaryData.forEach((emp: any) => {
             for (let day = 1; day <= lastDayToShow; day++) {
                 const currentDate = new Date(Date.UTC(year, month - 1, day));
                 const record = attendanceRecords.find(a => 
@@ -1259,7 +1295,8 @@ export class AttendanceService {
         summarySheet.getRow(3).values = [
             'STT', 'Nhân viên', 'Chi nhánh', 'Chức vụ', 
             'Tổng công', 'HC (1.0)', 'Công 1/2', 'Nghỉ', 
-            'Muộn', 'Sớm', 'TC (H)', 'Phụ cấp ăn trưa'
+            'Muộn', 'Sớm', 'TC (H)', 'PC Ăn trưa',
+            'PC Xăng xe', 'PC Kỹ thuật', 'PC Khác'
         ];
 
         summarySheet.columns = [
@@ -1274,7 +1311,10 @@ export class AttendanceService {
             { key: 'lateDays', width: 10 },
             { key: 'earlyLeaveDays', width: 10 },
             { key: 'totalOvertimeHours', width: 10 },
-            { key: 'lunchAllowance', width: 18 },
+            { key: 'lunchAllowance', width: 15 },
+            { key: 'travelAllowance', width: 15 },
+            { key: 'technicalAllowance', width: 15 },
+            { key: 'otherAllowance', width: 15 },
         ];
 
         // Header Style cho Sheet Tổng quan (Dòng 3)
@@ -1282,7 +1322,7 @@ export class AttendanceService {
             cell.style = headerStyle as any;
         });
 
-        summaryData.forEach((emp, index) => {
+        summaryData.forEach((emp: any, index: number) => {
             const rowIndex = index + 4; // Dữ liệu bắt đầu từ dòng 4
             const empNameCell = `$B${rowIndex}`;
 
@@ -1291,8 +1331,6 @@ export class AttendanceService {
                 fullName: emp.fullName,
                 branchName: emp.branchName,
                 position: emp.position,
-                // Công thức liên kết Sheet Chi_tiet (Lưu ý: các cột Sheet Chi_tiet đã thay đổi khi thêm cột Thứ)
-                // Nhân viên: B, Thứ: D, Ngày Status: I, Muộn: J, Sớm: K, OT: L, Số công: N
                 totalWorkCount: { formula: `SUMIF(Chi_tiet!$B:$B, ${empNameCell}, Chi_tiet!$N:$N)`, value: emp.totalWorkCount },
                 fullDays: { formula: `COUNTIFS(Chi_tiet!$B:$B, ${empNameCell}, Chi_tiet!$N:$N, ">=1")`, value: emp.fullDays },
                 halfDaysCount: { formula: `SUMIFS(Chi_tiet!$N:$N, Chi_tiet!$B:$B, ${empNameCell}, Chi_tiet!$N:$N, ">0", Chi_tiet!$N:$N, "<1")`, value: emp.halfDaysTotal },
@@ -1300,11 +1338,16 @@ export class AttendanceService {
                 lateDays: { formula: `COUNTIFS(Chi_tiet!$B:$B, ${empNameCell}, Chi_tiet!$G:$G, "*muộn*")`, value: emp.lateDays },
                 earlyLeaveDays: { formula: `COUNTIFS(Chi_tiet!$B:$B, ${empNameCell}, Chi_tiet!$H:$H, "*sớm*")`, value: emp.earlyLeaveDays },
                 totalOvertimeHours: { formula: `SUMIF(Chi_tiet!$B:$B, ${empNameCell}, Chi_tiet!$L:$L) / 60`, value: emp.totalOvertimeHours },
-                lunchAllowance: { formula: `$F${rowIndex} * 35000`, value: emp.fullDays * 35000 },
+                lunchAllowance: emp.lunchAllowance,
+                travelAllowance: emp.travelAllowance,
+                technicalAllowance: emp.technicalAllowance,
+                otherAllowance: emp.otherAllowance,
             });
 
-            // Định dạng tiền tệ cho cột Phụ cấp
-            row.getCell('lunchAllowance').numFmt = '#,##0';
+            // Định dạng tiền tệ cho các cột Phụ cấp
+            ['lunchAllowance', 'travelAllowance', 'technicalAllowance', 'otherAllowance'].forEach(key => {
+                row.getCell(key).numFmt = '#,##0';
+            });
 
             // Style cho dòng dữ liệu
             row.eachCell((cell: any) => {

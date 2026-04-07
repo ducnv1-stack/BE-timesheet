@@ -772,9 +772,16 @@ export class EmployeesService {
 
         const rawConfigDiligent = (employee as any).customDiligentSalary ?? (employee as any).pos?.diligentSalary;
         const rawConfigAllowance = (employee as any).customAllowance ?? (employee as any).pos?.allowance;
+        const rawConfigLunch = (employee as any).customLunchAllowance ?? (employee as any).pos?.lunchAllowance;
+        const lunchType = (employee as any).customLunchAllowanceType ?? (employee as any).pos?.lunchAllowanceType ?? 'DAILY';
+        const rawConfigTravel = (employee as any).customTravelAllowance ?? (employee as any).pos?.travelAllowance;
+        const rawConfigTechnical = (employee as any).customTechnicalAllowance ?? (employee as any).pos?.technicalAllowance;
 
         const effectiveDiligent = rawConfigDiligent != null ? Number(rawConfigDiligent) : 0;
         const effectiveAllowance = rawConfigAllowance != null ? Number(rawConfigAllowance) : 0;
+        const effectiveLunchRate = rawConfigLunch != null ? Number(rawConfigLunch) : 0;
+        const effectiveTravel = rawConfigTravel != null ? Number(rawConfigTravel) : 0;
+        const effectiveTechnical = rawConfigTechnical != null ? Number(rawConfigTechnical) : 0;
 
         // Tính Chuyên cần: Phải đạt đủ hoặc vượt công chuẩn mới được hưởng 100% chuyên cần, ngược lại = 0
         if (effectiveStandardDays > 0) {
@@ -783,8 +790,20 @@ export class EmployeesService {
             diligentSalary = effectiveDiligent;
         }
         
-        // Phụ cấp thường là cố định theo tháng
-        allowance = effectiveAllowance;
+        const fullDays = attendances.filter((a: any) => Number(a.workCount) >= 1.0).length;
+
+        // Phụ cấp ăn trưa tính theo ngày làm việc thực tế (chỉ tính công hành chính 1.0) HOẶC cố định hàng tháng
+        const lunchAllowance = (lunchType === 'DAILY') 
+            ? effectiveLunchRate * fullDays 
+            : effectiveLunchRate;
+        
+        // Các phụ cấp khác là cố định theo tháng
+        const travelAllowance = effectiveTravel;
+        const technicalAllowance = effectiveTechnical;
+        const otherAllowance = effectiveAllowance;
+
+        // Tổng phụ cấp cho netIncome
+        allowance = lunchAllowance + travelAllowance + technicalAllowance + otherAllowance;
 
         const netIncome = baseSalary + commission + hotBonus + shippingFee + actualReward + diligentSalary + allowance;
 
@@ -802,6 +821,10 @@ export class EmployeesService {
             shippingFee,
             baseSalary,
             diligentSalary,
+            lunchAllowance,
+            travelAllowance,
+            technicalAllowance,
+            otherAllowance,
             allowance,
             netIncome,
             branchTotalOrders,

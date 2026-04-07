@@ -10,6 +10,11 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum AllowanceType {
+  DAILY
+  MONTHLY
+}
+
 // 🟦 branches – Chi nhánh
 model Branch {
   id        String   @id @default(uuid()) @db.Uuid
@@ -198,6 +203,10 @@ model Employee {
   // 🆕 Cài đặt Lương ngoại lệ cá nhân
   customBaseSalary          Decimal? @map("custom_base_salary") @db.Decimal(20, 2)
   customDiligentSalary      Decimal? @map("custom_diligent_salary") @db.Decimal(20, 2)
+  customLunchAllowance      Decimal? @map("custom_lunch_allowance") @db.Decimal(20, 2)
+  customLunchAllowanceType  AllowanceType? @default(DAILY) @map("custom_lunch_allowance_type")
+  customTravelAllowance     Decimal? @map("custom_travel_allowance") @db.Decimal(20, 2)
+  customTechnicalAllowance  Decimal? @map("custom_technical_allowance") @db.Decimal(20, 2)
   customAllowance           Decimal? @map("custom_allowance") @db.Decimal(20, 2)
   customStandardWorkingDays Int?     @map("custom_standard_working_days")
 
@@ -246,6 +255,10 @@ model Position {
   // 🆕 Cài đặt Lương mặc định theo Chức vụ
   baseSalary          Decimal? @map("base_salary") @db.Decimal(20, 2)
   diligentSalary      Decimal? @map("diligent_salary") @db.Decimal(20, 2)
+  lunchAllowance      Decimal? @map("lunch_allowance") @db.Decimal(20, 2)
+  lunchAllowanceType  AllowanceType @default(DAILY) @map("lunch_allowance_type")
+  travelAllowance     Decimal? @map("travel_allowance") @db.Decimal(20, 2)
+  technicalAllowance  Decimal? @map("technical_allowance") @db.Decimal(20, 2)
   allowance           Decimal? @map("allowance") @db.Decimal(20, 2)
   standardWorkingDays Int?     @map("standard_working_days")
 
