@@ -3,9 +3,14 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateExceptionRequestDto, ExceptionType } from './dto/create-exception-request.dto';
 import { UpdateExceptionRequestStatusDto, RequestStatus } from './dto/update-exception-request-status.dto';
 
+import { AttendanceCalculatorService, AttendanceConfig } from '../attendance/attendance-calculator.service';
+
 @Injectable()
 export class AttendanceExceptionRequestsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private calculator: AttendanceCalculatorService
+  ) {}
 
   async create(createDto: CreateExceptionRequestDto) {
     const { date, attendanceId, employeeId, ...rest } = createDto;
@@ -30,6 +35,7 @@ export class AttendanceExceptionRequestsService {
         date: new Date(date),
         employeeId,
         attendanceId,
+        actualTime: createDto.actualTime,
         status: RequestStatus.PENDING,
       },
     });
@@ -144,70 +150,85 @@ export class AttendanceExceptionRequestsService {
     request: any,
     approvedById: string
   ) {
-    const attendance = request.attendance;
+    const attendance = await tx.attendance.findUnique({
+        where: { id: request.attendanceId },
+        include: { employee: true }
+    });
     if (!attendance) return;
 
-    const updateData: {
-      lateMinutes?: number;
-      earlyLeaveMinutes?: number;
-      checkInStatus?: string;
-      checkOutStatus?: string;
-      note?: string;
-    } = {};
-
-    const auditData: {
-      old: Record<string, any>;
-      new: Record<string, any>;
-    } = {
-      old: {},
-      new: {},
+    const updateData: Record<string, any> = {
+        isManualOverride: true,
+        approvedById: approvedById,
     };
 
-    switch (request.type) {
-      case ExceptionType.GO_LATE:
-        updateData.lateMinutes = 0;
-        updateData.checkInStatus = 'ON_TIME';
-        auditData.old.lateMinutes = (attendance as any).lateMinutes;
-        auditData.new.lateMinutes = 0;
-        break;
-      case ExceptionType.LEAVE_EARLY:
-        updateData.earlyLeaveMinutes = 0;
-        updateData.checkOutStatus = 'ON_TIME';
-        auditData.old.earlyLeaveMinutes = (attendance as any).earlyLeaveMinutes;
-        auditData.new.earlyLeaveMinutes = 0;
-        break;
-      case ExceptionType.GPS_ERROR:
-        // Mark GPS as manually verified/ignored
-        updateData.note = (attendance.note ? attendance.note + '\n' : '') + '[Đơn giải trình GPS được duyệt]';
-        break;
-      case ExceptionType.FORGOT_CHECKIN:
-      case ExceptionType.FORGOT_CHECKOUT:
-        // These might need manual time entry by HR anyway, but we can mark them as processed
-        updateData.note = (attendance.note ? attendance.note + '\n' : '') + `[Đơn giải trình ${request.type} được duyệt]`;
-        break;
+    // 1. Cập nhật giờ dựa trên đơn giải trình
+    if (request.type === ExceptionType.FORGOT_CHECKIN && request.actualTime) {
+        const [h, m] = request.actualTime.split(':').map(Number);
+        const newIn = new Date(attendance.date);
+        newIn.setUTCHours(h - 7, m, 0, 0); // Giả định VN+7
+        updateData.checkInTime = newIn;
+    } else if (request.type === ExceptionType.FORGOT_CHECKOUT && request.actualTime) {
+        const [h, m] = request.actualTime.split(':').map(Number);
+        const newOut = new Date(attendance.date);
+        newOut.setUTCHours(h - 7, m, 0, 0);
+        updateData.checkOutTime = newOut;
     }
 
-    if (Object.keys(updateData).length > 0) {
-      await tx.attendance.update({
-        where: { id: attendance.id },
-        data: {
-          ...updateData,
-          isManualOverride: true,
-          approvedById: approvedById,
+    // 2. Lấy cấu hình để tính toán lại
+    const policy = await tx.attendancePolicy.findFirst({
+        where: {
+            OR: [
+                { employees: { some: { id: attendance.employeeId } } },
+                { positions: { some: { id: attendance.employee.positionId } } }
+            ]
         },
-      });
+        include: { days: true }
+    });
 
-      // Record Audit Log
-      await tx.attendanceAuditLog.create({
-        data: {
-          attendanceId: attendance.id,
-          changedBy: approvedById,
-          action: `EXCEPTION_APPROVED_${request.type}`,
-          oldData: auditData.old,
-          newData: auditData.new,
-          reason: `Phê duyệt đơn giải trình: ${request.reason}`,
-        },
-      });
+    if (policy) {
+        const configData: AttendanceConfig = policy.configData as any;
+        const checkInTime = updateData.checkInTime || attendance.checkInTime;
+        const checkOutTime = updateData.checkOutTime || attendance.checkOutTime;
+
+        if (checkInTime && checkOutTime) {
+            const engineResult = this.calculator.evaluateAttendance(configData, checkInTime, checkOutTime);
+            
+            // Nếu là đơn giải trình đi muộn/về sớm, ép trạng thái về ON_TIME
+            if (request.type === ExceptionType.GO_LATE) {
+                engineResult.lateMinutes = 0;
+                engineResult.checkInStatus = 'ON_TIME';
+            } else if (request.type === ExceptionType.LEAVE_EARLY) {
+                engineResult.earlyLeaveMinutes = 0;
+                engineResult.checkOutStatus = 'ON_TIME';
+            }
+
+            Object.assign(updateData, engineResult);
+        }
     }
+
+    await tx.attendance.update({
+      where: { id: attendance.id },
+      data: updateData,
+    });
+
+    // Record Audit Log
+    await tx.attendanceAuditLog.create({
+      data: {
+        attendanceId: attendance.id,
+        changedBy: approvedById,
+        action: `EXCEPTION_APPROVED_${request.type}`,
+        oldData: {
+            checkInTime: attendance.checkInTime,
+            checkOutTime: attendance.checkOutTime,
+            workCount: attendance.workCount
+        },
+        newData: {
+            checkInTime: updateData.checkInTime,
+            checkOutTime: updateData.checkOutTime,
+            workCount: updateData.workCount
+        },
+        reason: `Phê duyệt đơn giải trình: ${request.reason}`,
+      },
+    });
   }
 }

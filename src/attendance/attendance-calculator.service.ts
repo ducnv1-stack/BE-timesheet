@@ -84,6 +84,7 @@ export interface EffectiveSchedule {
   shift1_work_count: number;
   shift2_work_count: number;
   work_count: number;
+  total_standard_hours: number;
 }
 
 @Injectable()
@@ -108,6 +109,7 @@ export class AttendanceCalculatorService {
         shift1_work_count: Number(dailyRule.shift1_work_count ?? 0.5),
         shift2_work_count: Number(dailyRule.shift2_work_count ?? 0.5),
         work_count: Number(dailyRule.work_count ?? 1.0),
+        total_standard_hours: Number(config.schedule?.total_standard_hours || 8),
       };
     }
     
@@ -117,6 +119,7 @@ export class AttendanceCalculatorService {
       end_time: '17:30',
       break_start: undefined,
       break_end: undefined,
+      total_standard_hours: 8,
     };
     
     // Mặc định CN là ngày nghỉ nếu không có cấu hình
@@ -134,6 +137,7 @@ export class AttendanceCalculatorService {
       shift1_work_count: 0.5,
       shift2_work_count: 0.5,
       work_count: 1.0,
+      total_standard_hours: Number(schedule.total_standard_hours || 8),
     };
   }
 
@@ -449,6 +453,12 @@ export class AttendanceCalculatorService {
 
     let dailyStatus = detectedShift;
     
+    // 🆕 TÍNH CÔNG THEO TỶ LỆ - ĐIỂM CUỐI CÙNG DUY NHẤT
+    // Luôn sử dụng totalWorkMinutes đã trừ nghỉ trưa để tính công
+    const stdHours = schedule.total_standard_hours || 8;
+    const stdMinutes = stdHours * 60;
+    const finalWorkCount = Number(Math.min(1.0, totalWorkMinutes / stdMinutes).toFixed(2));
+
     if (isFlexibleTheme || alwaysFullDay) {
         return {
             totalWorkMinutes,
@@ -458,7 +468,7 @@ export class AttendanceCalculatorService {
             checkInStatus: (isRawTheme || ignoreLate) ? 'ON_TIME' : finalCheckInStatus,
             checkOutStatus: (isRawTheme || ignoreEarly) ? (overtimeMinutes > 0 ? 'OVERTIME' : 'ON_TIME') : (overtimeMinutes > 0 ? 'OVERTIME' : finalCheckOutStatus),
             dailyStatus: detectedShift === 'FULL_DAY' ? 'FULL_DAY' : detectedShift,
-            workCount: alwaysFullDay ? 1.0 : workCount,
+            workCount: finalWorkCount,
         };
     }
 
@@ -469,8 +479,8 @@ export class AttendanceCalculatorService {
       earlyLeaveMinutes: finalEarlyLeaveMinutes,
       checkInStatus: finalCheckInStatus,
       checkOutStatus: finalCheckOutStatus,
-      dailyStatus,
-      workCount,
+      dailyStatus: detectedShift,
+      workCount: finalWorkCount,
     };
   }
 }

@@ -403,12 +403,16 @@ export class AttendanceService {
             // ... (legacy logic) ...
             totalWorkMinutes = Math.floor((now.getTime() - attendance.checkInTime.getTime()) / 60000);
             dailyStatus = ((attendance.checkInStatus?.startsWith('LATE')) || checkOutStatus === 'EARLY_LEAVE') ? 'LATE_DAY' : 'FULL_DAY';
-            workCount = 1.0;
+            
+            // 🆕 Tính công theo tỷ lệ 8 tiếng (480p)
+            workCount = Number(Math.min(1.0, totalWorkMinutes / 480).toFixed(2));
         } else if (attendance.shift && attendance.checkInTime) {
             // ... (legacy logic) ...
             totalWorkMinutes = Math.floor((now.getTime() - attendance.checkInTime.getTime()) / 60000);
             dailyStatus = ((attendance.checkInStatus?.startsWith('LATE')) || checkOutStatus === 'EARLY_LEAVE') ? 'LATE_DAY' : 'FULL_DAY';
-            workCount = 1.0;
+            
+            // 🆕 Tính công theo tỷ lệ 8 tiếng (480p)
+            workCount = Number(Math.min(1.0, totalWorkMinutes / 480).toFixed(2));
         }
 
         return this.prisma.attendance.update({
@@ -912,11 +916,17 @@ export class AttendanceService {
                 }
 
                 if (checkInDate && checkOutDate) {
-                    totalWorkMinutes = Math.floor((checkOutDate.getTime() - checkInDate.getTime()) / 60000);
+                    const rawMinutes = Math.floor((checkOutDate.getTime() - checkInDate.getTime()) / 60000);
+                    // 🆕 Trừ giờ nghỉ trưa cho logic Legacy
+                    const breakMins = shift?.breakMinutes || 90;
+                    totalWorkMinutes = rawMinutes > breakMins ? rawMinutes - breakMins : rawMinutes;
+
                     const isTooLate = lateMinutes > 30;
                     const isTooEarly = earlyLeaveMinutes > 30;
                     dailyStatus = (isTooLate || isTooEarly) ? 'INCOMPLETE' : 'FULL_DAY';
-                    workCount = (isTooLate || isTooEarly) ? 0.5 : 1.0;
+                    
+                    // 🆕 Tính công theo tỷ lệ 8 tiếng (480p)
+                    workCount = Number(Math.min(1.0, totalWorkMinutes / 480).toFixed(2));
                 } else if (!checkInDate && !checkOutDate) {
                     dailyStatus = 'ABSENT_UNAPPROVED';
                     workCount = 0;

@@ -29,6 +29,10 @@ export class CreateExceptionRequestDto {
   @IsNotEmpty()
   reason: string;
 
+  @IsString()
+  @IsOptional()
+  actualTime?: string;
+
   @IsArray()
   @IsString({ each: true })
   @IsOptional()

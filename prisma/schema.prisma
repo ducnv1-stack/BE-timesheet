@@ -825,6 +825,7 @@ model AttendanceExceptionRequest {
   reason       String    @db.Text
   images       String[]  @default([]) @map("images")
   status       String    @default("PENDING") // PENDING, APPROVED, REJECTED
+  actualTime   String?   @map("actual_time") // Giờ đề xuất (ví dụ "17:30")
   approvedById String?   @map("approved_by_id") @db.Uuid
   approvedAt   DateTime? @map("approved_at")
   note         String?   @db.Text // Admin note
